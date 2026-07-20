@@ -16,3 +16,9 @@ venv/
 
 # GitHub Pages working copy (created by the release workflow)
 pages/
+
+# graphify / SwarmVault KB integration
+graphify-out
+graphify-out/
+docs/kb
+/var/www/knowledge-base/graphify/agentscopex/graphify-mesh/

@@ -5,8 +5,53 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
+  security:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: gitleaks — scan git history for hardcoded secrets
+        uses: gitleaks/gitleaks-action@v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: trufflehog — scan git history for verified secrets
+        uses: trufflesecurity/trufflehog@v3.95.9
+        with:
+          path: ./
+          base: ""
+          head: ${{ github.ref_name }}
+          extra_args: --results=verified,unknown
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install graphify-mesh with test extras
+        # graphifyy (the upstream graphify CLI/library) is a declared
+        # dependency, so this pulls it from PyPI automatically.
+        run: pip install -e ".[test]"
+
+      - name: pip-audit — audit installed Python dependencies for known CVEs
+        # Best-effort: depends on reachability of the PyPI advisory DB, so a
+        # network hiccup shouldn't fail the whole pipeline the way a real
+        # secret leak or a code vulnerability should.
+        continue-on-error: true
+        run: |
+          pip install pip-audit
+          pip-audit
+
   test:
+    needs: security
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -21,12 +66,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install the upstream graphify CLI (required by the test suite)
-        # graphify is not on PyPI; the sync engine imports graphify.build and
-        # the test suite exercises real merge-tag behavior against it.
-        run: pip install "graphifyy @ git+https://github.com/safishamsi/graphifyy"
-
       - name: Install graphify-mesh with test extras
+        # graphifyy (the upstream graphify CLI/library) is a declared
+        # dependency, so this pulls it from PyPI automatically.
         run: pip install -e ".[test]"
 
       - name: Run the test suite

@@ -6,12 +6,19 @@ repos. Every path below is a placeholder — substitute your own.
 ## 1. Prerequisites
 
 - **Python 3.11+**
-- **The upstream `graphify` CLI.** graphify-mesh shells out to the `graphify`
-  binary and imports `graphify.build` at merge time. It is **not** on PyPI, so
-  install it separately:
+- **The upstream `graphify` CLI/library.** graphify-mesh shells out to the
+  `graphify` binary and imports `graphify.build` at merge time. It's published
+  on PyPI as `graphifyy` and is a declared dependency of this package, so
+  `pip install graphify-mesh` (step 2 below) pulls it in automatically — no
+  separate install needed for the library import to work.
+
+  You do still want the standalone `graphify` **command** on `PATH` if you
+  plan to run ad-hoc queries yourself (outside the sync engine), or if the
+  sync engine runs in an environment where its own venv's `bin/` isn't on
+  `PATH` (e.g. a systemd service — see `GRAPHIFY_BIN` below):
 
   ```bash
-  pipx install graphifyy      # provides the `graphify` command
+  pipx install graphifyy      # provides the `graphify` command, isolated
   graphify --help             # confirm it is on PATH
   ```
 

@@ -1,7 +1,7 @@
-# graphify-mesh
+# Graphify Mesh
 
 A scheduled **sync engine** plus a companion **MCP query server** that merges
-many per-repo [`graphify`](https://github.com/safishamsi/graphifyy) knowledge
+many per-repo [`graphify`](https://github.com/Graphify-Labs/graphify) knowledge
 graphs into one safe, repo-attributed, human-named **global graph** — with a
 cross-project dependency / similarity / API overlay, and a query server that
 respects *"search only in my current repo unless I ask for more."*
@@ -9,6 +9,8 @@ respects *"search only in my current repo unless I ask for more."*
 - **pip / PyPI name:** `graphify-mesh`
 - **import package:** `graphify_mesh`
 - **console scripts:** `graphify-mesh-sync`, `graphify-mesh-server`, `graphify-mesh-reap`
+- **Graphify:** [github.com/Graphify-Labs/graphify](https://github.com/Graphify-Labs/graphify)
+- **Docs:** see [Documentation](#documentation) below
 
 ---
 
@@ -95,11 +97,13 @@ See [`docs/architecture.md`](docs/architecture.md) for the full pipeline.
 ## Quickstart
 
 ```bash
-# 1. Install the upstream graphify CLI (separate tool, not on PyPI):
-pipx install graphifyy
-
-# 2. Install graphify-mesh:
+# 1. Install graphify-mesh (pulls in the upstream `graphifyy` library dependency
+#    automatically):
 pip install graphify-mesh          # or: pip install -e .  (from a checkout)
+
+# 2. (Optional) Also install the standalone `graphify` CLI command, isolated,
+#    if you want to run ad-hoc queries yourself outside the sync engine:
+pipx install graphifyy
 
 # 3. Describe your repos in a registry.json (see examples/registry.example.json):
 cp examples/registry.example.json /path/to/your/workspace/graph-mesh/bin/registry.json
