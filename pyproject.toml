@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "graphify-mesh"
-version = "0.1.0"
+version = "0.0.2"
 description = "Scheduled sync engine + companion MCP server that merges many per-repo graphify knowledge graphs into one repo-attributed, human-named global graph with a cross-project dependency/similarity/API overlay."
 readme = "README.md"
 license = { file = "LICENSE" }

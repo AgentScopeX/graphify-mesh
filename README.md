@@ -133,6 +133,7 @@ Full walkthrough: [`docs/setup.md`](docs/setup.md).
 | Doc | What it covers |
 |-----|----------------|
 | [`docs/setup.md`](docs/setup.md) | Install, configure a registry for *your* repos, first dry-run + real run, register the MCP server, install-from-index URL. |
+| [`docs/keeping-sync-up-to-date.md`](docs/keeping-sync-up-to-date.md) | Scheduled re-indexing: step-by-step systemd timer setup (env file, units, cadence, reaper), cron alternative, adding/removing repos, troubleshooting. |
 | [`docs/configuration.md`](docs/configuration.md) | Every `GRAPHIFY_MESH_*` env var, every `Settings` field, the `registry.json` and `manual-relations.json` schemas. |
 | [`docs/architecture.md`](docs/architecture.md) | Pipeline stages, the two-MCP-server concept, and the structural-vs-overlay / rebuild-from-empty invariants. |
 | [`docs/mcp-server.md`](docs/mcp-server.md) | The 5 tools, the stdio JSON-RPC protocol, how to register the server. |
