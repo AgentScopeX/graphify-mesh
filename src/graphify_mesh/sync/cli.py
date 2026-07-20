@@ -30,9 +30,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--mesh-root", type=Path, default=None, help="Override the graph-mesh repo root (testing).")
     parser.add_argument("--scan-root", type=Path, default=None, help="Override the scan root (testing).")
     parser.add_argument("--registry", type=Path, default=None, help="Override the registry.json path (testing).")
-    parser.add_argument("--skip-labeling", action="store_true", default=True, help="Skip the non-placeholder community_name check. Default: on.")
-    parser.add_argument("--no-skip-labeling", dest="skip_labeling", action="store_false", help="Enforce the community_name check.")
-    parser.add_argument("--skip-embedding", action="store_true", default=True, help="Log-skip the embedding stage. Default: on.")
+    # WS2 (naming) and WS3 (embedding) are both wired into the pipeline, so
+    # both stages run by default now — a real run is expected to name
+    # communities and embed nodes. --skip-* remain as explicit opt-outs for
+    # fast local-only runs or when the Ollama host is unreachable.
+    parser.add_argument("--skip-labeling", action="store_true", default=False, help="Skip the naming stage and its non-placeholder community_name check. Default: off.")
+    parser.add_argument("--no-skip-labeling", dest="skip_labeling", action="store_false", help="(default) Enforce the naming stage and its community_name check.")
+    parser.add_argument("--skip-embedding", action="store_true", default=False, help="Skip the embedding stage. Default: off.")
+    parser.add_argument("--no-skip-embedding", dest="skip_embedding", action="store_false", help="(default) Run the embedding stage.")
     parser.add_argument("--allow-shrink", action="store_true", help="Explicitly authorize a smaller published graph than the previous generation.")
     parser.add_argument("-v", "--verbose", action="store_true")
     return parser.parse_args(argv)

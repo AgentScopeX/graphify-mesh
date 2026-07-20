@@ -41,12 +41,29 @@ jobs:
             dist/*.whl
 
       # ---- PEP 503 "simple" index on the gh-pages branch ----------------
-      - name: Check out gh-pages (create orphan branch if missing)
+      - name: Check whether gh-pages already exists
+        # actions/checkout retries+fails noisily (and can abort the job) when
+        # asked to fetch a ref that doesn't exist yet, which is exactly the
+        # case on the very first release. Check first instead of relying on
+        # continue-on-error to paper over the failed fetch.
+        id: gh-pages-check
+        run: |
+          if git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check out gh-pages
+        if: steps.gh-pages-check.outputs.exists == 'true'
         uses: actions/checkout@v4
         with:
           ref: gh-pages
           path: pages
-        continue-on-error: true
+
+      - name: Create empty pages/ dir (gh-pages doesn't exist yet)
+        if: steps.gh-pages-check.outputs.exists == 'false'
+        run: mkdir -p pages
 
       - name: Regenerate the simple index
         env:

@@ -26,7 +26,8 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from graphify_mesh.sync import embedding, graphify_cli, lexical_index, naming, overlay, publish, repo_tags, validate
+from graphify_mesh.sync import embedding, graphify_cli, lexical_index, naming, overlay, progress, publish, repo_tags, validate
+from graphify_mesh.sync.backend import assert_pinned_backend
 from graphify_mesh.sync.config import (
     CODE_EXTENSIONS,
     FORBIDDEN_OVERLAY_RELATION_TYPES,
@@ -122,10 +123,19 @@ def run(settings: Settings) -> RunReport:
 
 
 def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
+    log.info("discovery: scanning %s ...", settings.scan_root)
     discovered = discover_filesystem(settings.scan_root, settings.approved_root)
     registry = load_registry(settings.registry_path)
     reconciliation = reconcile(discovered, registry, settings.mesh_root)
     report = RunReport(dry_run=settings.dry_run, reconciliation=reconciliation.to_dict())
+    log.info(
+        "discovery: %d registered, %d discovered, %d broken, %d removed, %d renamed",
+        len(registry.repos),
+        len(discovered),
+        len(reconciliation.broken),
+        len(reconciliation.removed),
+        len(reconciliation.renamed),
+    )
 
     state = load_state(settings.state_path)
     broken_ids = set(reconciliation.broken)
@@ -159,7 +169,9 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
             repo_roots_by_id[repo_id] = entry.root
         report.project_actions.append({"repo_id": repo_id, "action": "none", "status": "broken_symlink"})
 
-    for entry in active_repos:
+    total_active = len(active_repos)
+    bar = progress.ProgressBar(total_active, label="indexing")
+    for i, entry in enumerate(active_repos, start=1):
         root = _root_for(entry, reconciliation.to_dict())
         repo_roots_by_id[entry.repo_id] = root
         graph_path = entry.collection_path / "graph.json"
@@ -167,22 +179,29 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
         current_manifest = compute_source_manifest(root)
         prior_state = state.get(entry.repo_id)
         action = decide_action(prior_state, current_manifest, has_graph)
+        log.info("[%d/%d] %s: %s ...", i, total_active, entry.repo_id, action)
+        bar.tick(i - 1, f"{entry.repo_id}: {action} ...")
 
         if settings.dry_run:
             planned_status = "would_bootstrap" if action == ACTION_BOOTSTRAP else f"would_{action}"
             report.project_actions.append({"repo_id": entry.repo_id, "action": action, "status": planned_status})
             if has_graph:
                 graph_paths_by_repo[entry.repo_id] = graph_path
+            bar.tick(i, f"{entry.repo_id}: {planned_status}")
             continue
 
         if action == ACTION_SKIP:
             report.project_actions.append({"repo_id": entry.repo_id, "action": action, "status": "unchanged"})
             graph_paths_by_repo[entry.repo_id] = graph_path
+            log.info("[%d/%d] %s: unchanged, skipped", i, total_active, entry.repo_id)
+            bar.tick(i, f"{entry.repo_id}: unchanged")
             continue
 
         outcome: ProjectOutcome = apply_action(
             entry.repo_id, settings.graphify_bin, root, entry.collection_path, action, current_manifest
         )
+        log.info("[%d/%d] %s: %s (%s)", i, total_active, entry.repo_id, outcome.status, action)
+        bar.tick(i, f"{entry.repo_id}: {outcome.status}")
         report.project_actions.append(
             {"repo_id": entry.repo_id, "action": action, "status": outcome.status, "reason": outcome.reason}
         )
@@ -197,6 +216,7 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
                 state[entry.repo_id] = outcome.new_manifest.to_dict()
         if graph_path.exists():
             graph_paths_by_repo[entry.repo_id] = graph_path
+    bar.finish()
 
     report.stale_repos = sorted(set(stale_repos))
     report.dirty_repos = sorted(set(dirty_repos))
@@ -212,12 +232,14 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
         report.merge_ok = False
         report.merge_error = "no per-repo graphs available to merge"
     else:
+        log.info("merge: merging %d per-repo graphs (from empty, sorted order) ...", len(sorted_graph_paths))
         merge_result = graphify_cli.run_merge_graphs(
             settings.graphify_bin, sorted_graph_paths, merged_out_path, staging_home
         )
         report.merge_ok = merge_result.ok
         if not merge_result.ok:
             report.merge_error = merge_result.stderr.strip()[:500]
+        log.info("merge: %s", "ok" if report.merge_ok else "FAILED: " + report.merge_error)
 
     if not report.merge_ok:
         _finalize(settings, staging_root, report, state, published_data=None, generation_id="")
@@ -249,21 +271,37 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
     naming_dir.mkdir(parents=True, exist_ok=True)
     naming_staging_home = staging_root / "naming-home"
 
-    naming_result = naming.run_naming(
-        settings.graphify_bin,
-        naming_dir,
-        naming_staging_home,
-        stripped_graph_data,
-        settings,
-        health_check=settings.ollama_health_check,
-    )
-    report.labeling = naming_result.labeling
-    report.clustering_backend = naming_result.backend
-
-    if naming_result.labeling == naming.LABELING_DEGRADED:
-        graph_data = naming.restore_last_global_community_names(naming_result.graph_data, previous_global_graph)
+    if settings.skip_labeling:
+        # --skip-labeling must guarantee ZERO network calls, no exceptions.
+        # Do NOT call naming.run_naming() here even indirectly — that
+        # function unconditionally runs `graphify cluster-only` + (usually)
+        # `graphify label --backend ollama`, contacting whatever
+        # ollama_base_url resolves to regardless of this flag. Only the
+        # network-free backend assertion (C25, local import check, no
+        # Ollama involved) runs; graph_data and community/community_name
+        # stay stripped/placeholder, exactly as the flag promises.
+        log.info("naming: skipped (--skip-labeling) — no naming/Ollama calls made")
+        backend_check = assert_pinned_backend(settings.graphify_bin)
+        graph_data = stripped_graph_data
+        report.labeling = "skipped (--skip-labeling)"
+        report.clustering_backend = backend_check.backend
     else:
-        graph_data = naming_result.graph_data
+        log.info("naming: reclustering + labeling communities ...")
+        naming_result = naming.run_naming(
+            settings.graphify_bin,
+            naming_dir,
+            naming_staging_home,
+            stripped_graph_data,
+            settings,
+            health_check=settings.ollama_health_check,
+        )
+        report.labeling = naming_result.labeling
+        report.clustering_backend = naming_result.backend
+        log.info("naming: %s (backend=%s)", naming_result.labeling, naming_result.backend)
+        if naming_result.labeling == naming.LABELING_DEGRADED:
+            graph_data = naming.restore_last_global_community_names(naming_result.graph_data, previous_global_graph)
+        else:
+            graph_data = naming_result.graph_data
 
     # WS3: embed-changed stage. Runs after naming/label, before overlay-resolve
     # (plan WS1 item 6 order). Per-repo raw graphs are loaded once here and

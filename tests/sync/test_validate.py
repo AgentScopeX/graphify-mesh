@@ -40,6 +40,35 @@ def test_forbidden_edge_clean():
     assert result.ok
 
 
+def test_forbidden_edge_same_repo_depends_on_is_allowed():
+    """Upstream graphify's own extraction can legitimately emit a same-repo
+    `depends_on` edge (e.g. a Helm Chart.yaml subchart dependency) — this is
+    normal EXTRACTED data, not a cross-repo overlay leak, and must not trip
+    the invariant."""
+    data = {
+        "nodes": [{"id": "acme.infra::chart"}, {"id": "acme.infra::subchart"}],
+        "links": [
+            {
+                "source": "acme.infra::chart",
+                "target": "acme.infra::subchart",
+                "relation": "depends_on",
+                "confidence": "EXTRACTED",
+            }
+        ],
+    }
+    result = validate.validate_forbidden_edges(data)
+    assert result.ok
+
+
+def test_forbidden_edge_cross_repo_depends_on_still_caught():
+    data = {
+        "nodes": [{"id": "acme.a::x"}, {"id": "acme.b::y"}],
+        "links": [{"source": "acme.a::x", "target": "acme.b::y", "relation": "depends_on"}],
+    }
+    result = validate.validate_forbidden_edges(data)
+    assert not result.ok
+
+
 def test_shrink_guard_refuses_smaller_graph():
     result = validate.validate_shrink_guard((5, 5), (10, 10), allow_shrink=False)
     assert not result.ok

@@ -9,9 +9,32 @@ from __future__ import annotations
 
 import os
 import shlex
+import site
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+
+
+def _isolated_home_env(staging_home: Path) -> dict:
+    """HOME override for the calls below (C17: private staging dir so nothing
+    touches the real ~/.graphify), plus an explicit PYTHONPATH carrying the
+    *real* interpreter's site-packages.
+
+    Overriding HOME alone breaks Python: `site.py` derives the user-site
+    directory (~/.local/lib/pythonX.Y/site-packages on this platform) from
+    the HOME env var at subprocess interpreter startup, before any of our
+    code runs. If `graphify`/`graphifyy` is installed to the real user's
+    site-packages (e.g. `pip install --user`) rather than a venv baked into
+    GRAPHIFY_BIN's shebang, redirecting HOME silently makes it
+    unimportable in the child process (`ModuleNotFoundError: graphify`)
+    even though `graphify_bin` itself resolves fine via PATH. Carrying the
+    real site-packages paths through PYTHONPATH keeps the HOME isolation
+    (C17's actual goal) without breaking package resolution.
+    """
+    real_site_paths = [*site.getsitepackages(), site.getusersitepackages()]
+    existing = os.environ.get("PYTHONPATH", "")
+    pythonpath = os.pathsep.join([*real_site_paths, existing] if existing else real_site_paths)
+    return {"HOME": str(staging_home), "PYTHONPATH": pythonpath}
 
 
 @dataclass
@@ -78,7 +101,7 @@ def run_merge_graphs(graphify_bin: str, graph_paths: list[Path], out_path: Path,
     """
     argv = _base_argv(graphify_bin) + ["merge-graphs"] + [str(p) for p in graph_paths] + ["--out", str(out_path)]
     staging_home.mkdir(parents=True, exist_ok=True)
-    return _run(argv, cwd=None, env={"HOME": str(staging_home)})
+    return _run(argv, cwd=None, env=_isolated_home_env(staging_home))
 
 
 def run_cluster_only(graphify_bin: str, target_dir: Path, staging_home: Path) -> CliResult:
@@ -93,7 +116,7 @@ def run_cluster_only(graphify_bin: str, target_dir: Path, staging_home: Path) ->
     """
     argv = _base_argv(graphify_bin) + ["cluster-only", str(target_dir), "--no-viz"]
     staging_home.mkdir(parents=True, exist_ok=True)
-    return _run(argv, cwd=None, env={"HOME": str(staging_home)})
+    return _run(argv, cwd=None, env=_isolated_home_env(staging_home))
 
 
 def run_label(
@@ -123,4 +146,4 @@ def run_label(
         "--no-viz",
     ]
     staging_home.mkdir(parents=True, exist_ok=True)
-    return _run(argv, cwd=None, env={"HOME": str(staging_home)})
+    return _run(argv, cwd=None, env=_isolated_home_env(staging_home))

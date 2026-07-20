@@ -231,3 +231,27 @@ def test_home_only_redirected_during_merge_graphs_call(env, monkeypatch):
     assert len(captured_envs) == 1
     assert captured_envs[0]["HOME"] != real_home
     assert "graphify-mesh-sync-staging-" in captured_envs[0]["HOME"]
+
+
+def test_skip_labeling_makes_zero_naming_calls(env):
+    """Regression test: --skip-labeling must guarantee zero cluster-only/
+    label invocations (and therefore zero possible Ollama contact),
+    regardless of ollama_base_url or health-check state. A prior bug called
+    naming.run_naming() unconditionally and only used skip_labeling for a
+    log message + the validation bypass, so a "skip" run still silently
+    executed real cluster-only/label subprocess calls."""
+    env.add_repo("example-org.styleguide", "example-org", "styleguide", "styleguide.example-org.dev.lo", "repo_a.json")
+    env.write_registry()
+    # Force the health check to True (would-be-healthy) so if the bug
+    # regresses, run_naming would actually proceed into cluster-only/label
+    # rather than bailing out via the unrelated degraded-mode path — this
+    # test must fail for the RIGHT reason (calls happened) not by accident.
+    settings = env.settings(skip_labeling=True, ollama_health_check=lambda *a, **kw: True)
+
+    report = run(settings)
+
+    assert report.published
+    assert report.labeling == "skipped (--skip-labeling)"
+    call_log = env.read_call_log()
+    naming_calls = [c for c in call_log if c.get("cmd") in ("cluster-only", "label")]
+    assert naming_calls == [], f"skip_labeling=True must make zero naming calls, got: {naming_calls}"

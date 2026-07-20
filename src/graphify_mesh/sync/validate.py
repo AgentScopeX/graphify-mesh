@@ -65,10 +65,32 @@ def validate_dangling_ids(data: dict) -> ValidationResult:
     return ValidationResult(ok=not errors, errors=errors)
 
 
+def _repo_prefix(node_id: object) -> str | None:
+    """Extract the `<repo_id>` half of a merged `<repo_id>::<local_id>` node
+    id, or None if the id doesn't follow that convention (external/bare node)."""
+    if not isinstance(node_id, str) or "::" not in node_id:
+        return None
+    repo_id, _, _ = node_id.partition("::")
+    return repo_id
+
+
 def validate_forbidden_edges(data: dict) -> ValidationResult:
-    """The structural merged output must never contain overlay-only edges
-    (cross_repo:true, or an overlay relation type like semantically_similar_to)
-    — those belong exclusively in the WS4 overlay artifact (C5)."""
+    """The structural merged output must never contain CROSS-REPO overlay-only
+    edges (cross_repo:true, or a cross-repo overlay relation type like
+    semantically_similar_to) — those belong exclusively in the WS4 overlay
+    artifact (C5).
+
+    Same-repo edges sharing one of the overlay's relation-type strings are NOT
+    forbidden: upstream `graphify`'s own semantic extraction can legitimately
+    emit a same-repo `depends_on` edge (e.g. a Helm `Chart.yaml` subchart
+    dependency, a package.json same-repo reference) as normal EXTRACTED data.
+    The invariant this guards against is a cross-repo relation leaking into
+    structural truth, not the relation-type string appearing at all — so the
+    check is scoped to edges whose endpoints resolve to two DIFFERENT repo
+    prefixes (or where either endpoint has no repo prefix at all, since that
+    can only originate from the overlay's external-node handling, never from
+    a same-repo per-project graph).
+    """
     errors = []
     for link in data.get("links", data.get("edges", [])):
         if not isinstance(link, dict):
@@ -77,8 +99,13 @@ def validate_forbidden_edges(data: dict) -> ValidationResult:
             errors.append(f"forbidden-edge: cross_repo:true edge {link.get('source')}->{link.get('target')}")
             continue
         rel = link.get("relation") or link.get("type")
-        if rel in FORBIDDEN_OVERLAY_RELATION_TYPES:
-            errors.append(f"forbidden-edge: overlay relation {rel!r} on {link.get('source')}->{link.get('target')}")
+        if rel not in FORBIDDEN_OVERLAY_RELATION_TYPES:
+            continue
+        src_repo = _repo_prefix(link.get("source"))
+        dst_repo = _repo_prefix(link.get("target"))
+        if src_repo is not None and src_repo == dst_repo:
+            continue  # same-repo edge, legitimate upstream-extracted data
+        errors.append(f"forbidden-edge: cross-repo overlay relation {rel!r} on {link.get('source')}->{link.get('target')}")
     return ValidationResult(ok=not errors, errors=errors)
 
 
