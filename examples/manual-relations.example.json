@@ -1,0 +1,34 @@
+{
+  "relations": [
+    {
+      "type": "consumes_api",
+      "source": {
+        "repo": "example-org.frontend-b",
+        "source_file": "src/api/authClient.ts",
+        "qualified_label": "AuthClient.login"
+      },
+      "target": {
+        "repo": "example-org.backend-a",
+        "source_file": "src/Controller/AuthController.php",
+        "qualified_label": "AuthController::login"
+      },
+      "confidence": 0.9,
+      "evidence": "frontend-b's AuthClient.login POSTs to backend-a's /auth/login route handled by AuthController::login"
+    },
+    {
+      "type": "similar_approach",
+      "source": {
+        "repo": "example-org.backend-a",
+        "source_file": "src/Security/TokenGuard.php",
+        "qualified_label": "TokenGuard"
+      },
+      "target": {
+        "repo": "example-org.service-x",
+        "source_file": "internal/auth/guard.go",
+        "qualified_label": "TokenGuard"
+      },
+      "confidence": 0.75,
+      "evidence": "both implement the same stateless bearer-token guard pattern despite different languages"
+    }
+  ]
+}

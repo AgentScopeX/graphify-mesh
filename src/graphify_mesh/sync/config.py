@@ -1,0 +1,262 @@
+"""Configuration/settings for the graphify-mesh sync pipeline.
+
+All paths are configurable (CLI flags / GRAPHIFY_MESH_* env vars) so tests never
+touch a real filesystem tree. The path defaults below are placeholders for a
+typical single-host deployment; override them for your environment.
+"""
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+
+# C19: never re-litigate — see graphify_mesh.sync/__init__.py docstring for the
+# full evidence citation of why `merge-graphs` (stateless) is used instead of
+# `global add` (stateful, corrupts on out-of-order re-add).
+GRAPHIFY_MERGE_SUBCOMMAND = "merge-graphs"
+
+# C25: pinned WS2 clustering backend.
+#
+# graphify's `cluster.py:_partition()` tries `from graspologic.partition
+# import leiden` and silently falls back to `nx.community.louvain_communities`
+# on ImportError — there is no CLI flag that selects Leiden vs Louvain, it is
+# purely a function of what's importable in the graphify process's Python
+# environment. As of this writing, graspologic/leidenalg/igraph are absent
+# from both the pipx venv (/opt/pipx/venvs/graphifyy) and the active
+# ~/.local graphify install, so the real clustering backend today is
+# Louvain. Installing graspologic/leidenalg/igraph to get Leiden is
+# explicitly out of scope for this change (avoid touching global/system
+# state when uncertain, per operator policy) — Louvain is accepted here
+# deliberately, not silently. `graphify_mesh.sync.backend.assert_pinned_backend`
+# verifies at runtime that the actual backend still matches this constant
+# and hard-fails the pipeline if it ever drifts (e.g. someone installs
+# graspologic later and Leiden silently takes over).
+PINNED_CLUSTERING_BACKEND = "louvain"
+
+# Naming-stage Ollama defaults. Point these at your own Ollama host via the
+# GRAPHIFY_MESH_OLLAMA_* env vars. A small coder model (e.g. qwen2.5-coder:14b)
+# works well for community labeling; some larger models return hollow/empty
+# JSON from the OpenAI-compat endpoint, so validate any model you swap in.
+OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434/v1"
+OLLAMA_DEFAULT_MODEL = "qwen2.5-coder:14b"
+OLLAMA_DEFAULT_API_KEY = "dummy"
+OLLAMA_DEFAULT_HEALTH_TIMEOUT = 3.0
+
+# >30% of registered repos stale => refuse to publish (WS1 item 7 / plan
+# Verification #5). Kept as a named constant per dict-dispatch/no-magic-number
+# style rule.
+STALE_PUBLISH_THRESHOLD = 0.30
+
+# WS3 embedding-stage defaults (C9): the NATIVE Ollama `/api/embed` endpoint,
+# NOT the OpenAI-compat `/v1` surface used by OLLAMA_DEFAULT_BASE_URL above
+# for the WS2 naming/labeling LLM calls — different contract, different base
+# URL (no `/v1` suffix). Contract of the native /api/embed endpoint:
+#   POST {base}/api/embed  {"model": "...", "input": "str-or-list-of-str"}
+#   -> {"model", "embeddings": [[float, ...], ...], "total_duration",
+#       "load_duration", "prompt_eval_count"}
+# `qwen3-embedding:0.6b` was confirmed present in `/api/tags` and returns
+# 1024-dim vectors for both single-string and batched (list) input.
+# `nomic-embed-text:latest` is also present as a fallback candidate but was
+# not made the default since qwen3-embedding responded correctly first and
+# switching models later just needs GRAPHIFY_MESH_OLLAMA_EMBED_MODEL.
+EMBED_DEFAULT_BASE_URL = "http://localhost:11434"
+EMBED_DEFAULT_MODEL = "qwen3-embedding:0.6b"
+EMBED_DEFAULT_DIM = 1024
+EMBED_DEFAULT_HEALTH_TIMEOUT = 3.0
+
+# WS3 C27: keep only the last N *published* generations' embedding shards on
+# disk; GC prunes older ones at publish time (see embedding.persist_generation).
+KEEP_EMBEDDING_GENERATIONS = 2
+
+# Overlay-only relation types (WS4). These must NEVER appear in the
+# structural (per-repo or merged global) graph output (C5, WS1 item 7).
+FORBIDDEN_OVERLAY_RELATION_TYPES = frozenset(
+    {
+        "semantically_similar_to",
+        "similar_approach",
+        "depends_on",
+        "provides_api",
+        "consumes_api",
+    }
+)
+
+# File extension -> source category, for manifest-diff decisions (WS1 item 2).
+# dict-dispatch instead of if/elif chains per project code style.
+CODE_EXTENSIONS = frozenset(
+    {
+        ".py", ".php", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".java",
+        ".rb", ".c", ".h", ".cpp", ".hpp", ".cs", ".kt", ".swift", ".vue",
+    }
+)
+SEMANTIC_EXTENSIONS = frozenset(
+    {
+        ".md", ".mdx", ".rst", ".txt", ".yaml", ".yml", ".json", ".toml",
+        ".ini", ".cfg", ".conf", ".env.example",
+    }
+)
+IGNORED_DIR_NAMES = frozenset(
+    {
+        ".git", "node_modules", "vendor", "graphify-out", "__pycache__",
+        ".venv", "venv", "dist", "build", ".idea", ".vscode",
+    }
+)
+
+
+def categorize_file(path: Path) -> str:
+    """Classify a source file as 'code', 'semantic', or 'ignore'.
+
+    dict-dispatch (via frozenset membership) rather than an if/elif chain,
+    per project code style rules.
+    """
+    suffix = path.suffix.lower()
+    if suffix in CODE_EXTENSIONS:
+        return "code"
+    if suffix in SEMANTIC_EXTENSIONS:
+        return "semantic"
+    return "ignore"
+
+
+@dataclass
+class Settings:
+    """Resolved runtime configuration for one pipeline run."""
+
+    mesh_root: Path
+    scan_root: Path
+    approved_root: Path
+    registry_path: Path
+    graphify_bin: str = field(default_factory=lambda: os.environ.get("GRAPHIFY_BIN", "graphify"))
+    stale_threshold: float = STALE_PUBLISH_THRESHOLD
+    dry_run: bool = False
+    skip_labeling: bool = False
+    skip_embedding: bool = False
+    allow_shrink: bool = False
+    ollama_base_url: str = field(
+        default_factory=lambda: os.environ.get("GRAPHIFY_MESH_OLLAMA_BASE_URL", OLLAMA_DEFAULT_BASE_URL)
+    )
+    ollama_api_key: str = field(
+        default_factory=lambda: os.environ.get("GRAPHIFY_MESH_OLLAMA_API_KEY", OLLAMA_DEFAULT_API_KEY)
+    )
+    ollama_model: str = field(
+        default_factory=lambda: os.environ.get("GRAPHIFY_MESH_OLLAMA_MODEL", OLLAMA_DEFAULT_MODEL)
+    )
+    ollama_health_timeout: float = field(
+        default_factory=lambda: float(
+            os.environ.get("GRAPHIFY_MESH_OLLAMA_HEALTH_TIMEOUT", OLLAMA_DEFAULT_HEALTH_TIMEOUT)
+        )
+    )
+    # Test-only dependency injection: a `(base_url, api_key, timeout) -> bool`
+    # callable that replaces the real network health check. Never set in
+    # production; tests use this to force both the healthy and unhealthy
+    # naming-stage paths deterministically without touching the network.
+    ollama_health_check: object = None
+
+    # WS3 embedding-stage settings (C9: SEPARATE base URL from the /v1 LLM
+    # config above — the native /api/embed contract, not OpenAI-compat).
+    ollama_embed_base_url: str = field(
+        default_factory=lambda: os.environ.get("GRAPHIFY_MESH_OLLAMA_EMBED_BASE_URL", EMBED_DEFAULT_BASE_URL)
+    )
+    ollama_embed_model: str = field(
+        default_factory=lambda: os.environ.get("GRAPHIFY_MESH_OLLAMA_EMBED_MODEL", EMBED_DEFAULT_MODEL)
+    )
+    ollama_embed_health_timeout: float = field(
+        default_factory=lambda: float(
+            os.environ.get("GRAPHIFY_MESH_OLLAMA_EMBED_HEALTH_TIMEOUT", EMBED_DEFAULT_HEALTH_TIMEOUT)
+        )
+    )
+    # Test-only dependency injection, mirrors ollama_health_check above but
+    # for the embedding stage's own (native-endpoint) health check.
+    ollama_embed_health_check: object = None
+    keep_embedding_generations: int = KEEP_EMBEDDING_GENERATIONS
+
+    @property
+    def global_dir(self) -> Path:
+        return self.mesh_root / "graphify" / "global"
+
+    @property
+    def generations_dir(self) -> Path:
+        return self.global_dir / "generations"
+
+    @property
+    def current_symlink(self) -> Path:
+        return self.global_dir / "current"
+
+    @property
+    def status_path(self) -> Path:
+        return self.global_dir / "status.json"
+
+    @property
+    def state_path(self) -> Path:
+        return self.global_dir / "state" / "source-manifests.json"
+
+    @property
+    def lock_path(self) -> Path:
+        return self.global_dir / ".graphify-mesh-sync.lock"
+
+    @property
+    def embeddings_dir(self) -> Path:
+        """WS3: untracked embedding-index storage (id-map + per-repo shards).
+        Sibling of `naming_dir`/`generations_dir` under the global dir, never
+        git-tracked (see .gitignore `graphify/global/embeddings/`)."""
+        return self.global_dir / "embeddings"
+
+    @property
+    def embeddings_generations_dir(self) -> Path:
+        return self.embeddings_dir / "generations"
+
+    @property
+    def embeddings_current_symlink(self) -> Path:
+        """Mirrors `global_dir/current` (publish.flip_current): flipped
+        atomically, in the same publish step, to point at the embedding
+        shards for the generation that was just published."""
+        return self.embeddings_dir / "current"
+
+    @property
+    def manual_relations_path(self) -> Path:
+        """WS4: human-declared cross-project overlay edges the sync engine
+        cannot infer. Derived from mesh_root like every other Settings path, so
+        tests get an isolated file for free via their fake mesh_root."""
+        return self.mesh_root / "bin" / "manual-relations.json"
+
+    @property
+    def manual_relations_schema_path(self) -> Path:
+        return self.mesh_root / "bin" / "manual-relations.schema.json"
+
+    @property
+    def naming_dir(self) -> Path:
+        """Persistent WS2 naming-stage workspace (graphify-out/graph.json,
+        .graphify_labels.json, .graphify_labels.json.sig live here). Must
+        survive across pipeline runs — unlike the per-run staging tempdir —
+        so sig-gated label reuse (C23) actually has something to compare
+        against on the next run. In dry-run mode the caller redirects this
+        into the ephemeral staging root instead (mirrors lock_path's
+        dry-run redirection) so nothing touches the real mesh tree."""
+        return self.global_dir / "naming"
+
+    @classmethod
+    def from_env(
+        cls,
+        mesh_root: Path | None = None,
+        scan_root: Path | None = None,
+        registry_path: Path | None = None,
+        **overrides,
+    ) -> "Settings":
+        # No machine-specific defaults: mesh_root/scan_root default to the
+        # current working directory so the package is portable. Set them
+        # explicitly (CLI flags or GRAPHIFY_MESH_ROOT / GRAPHIFY_MESH_SCAN_ROOT)
+        # for a real deployment.
+        resolved_mesh_root = Path(
+            mesh_root or os.environ.get("GRAPHIFY_MESH_ROOT") or Path.cwd()
+        ).resolve()
+        resolved_scan_root = Path(
+            scan_root or os.environ.get("GRAPHIFY_MESH_SCAN_ROOT") or Path.cwd()
+        ).resolve()
+        resolved_registry = Path(
+            registry_path or os.environ.get("GRAPHIFY_MESH_REGISTRY", str(resolved_mesh_root / "bin" / "registry.json"))
+        ).resolve()
+        return cls(
+            mesh_root=resolved_mesh_root,
+            scan_root=resolved_scan_root,
+            approved_root=resolved_scan_root,
+            registry_path=resolved_registry,
+            **overrides,
+        )

@@ -1,0 +1,105 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from graphify_mesh.sync import lexical_index
+from graphify_mesh.sync.pipeline import run
+
+
+def test_tokenize_splits_namespace_and_double_colon():
+    tokens = lexical_index.tokenize_text(r"App\Service\Foo::barMethod")
+    assert "app" in tokens
+    assert "service" in tokens
+    assert "foo" in tokens
+    assert "barmethod" in tokens
+    # camelCase subtoken split
+    assert "bar" in tokens
+    assert "method" in tokens
+
+
+def test_tokenize_snake_case_subtokens():
+    tokens = lexical_index.tokenize_text("get_user_name")
+    assert "get_user_name" in tokens
+    assert "get" in tokens
+    assert "user" in tokens
+    assert "name" in tokens
+
+
+def test_tokenize_plain_word_regex_would_miss_subtokens():
+    """Documents the verified insufficiency: graphify's `\\w+` tokenizer
+    would return a single token here; ours must split it."""
+    import re
+
+    plain = re.findall(r"\w+", "getUserName".lower())
+    assert plain == ["getusername"]
+    ours = lexical_index.tokenize_text("getUserName")
+    assert "get" in ours and "user" in ours and "name" in ours
+
+
+def test_alias_forms_include_leading_backslash_variant():
+    aliases = lexical_index.extract_alias_forms(r"\App\Service\Foo", None)
+    assert "\\app\\service\\foo" in aliases
+    assert "app\\service\\foo" in aliases
+
+
+def test_alias_forms_class_method_pair():
+    aliases = lexical_index.extract_alias_forms("TimeService::calculate", "src/TimeService.php")
+    assert "timeservice::calculate" in aliases
+    assert "timeservice" in aliases
+    assert "calculate" in aliases
+    assert "timeservice.php" in aliases
+
+
+def test_build_lexical_index_field_boosts_and_determinism():
+    graphs_by_repo = {
+        "repo.a": {
+            "nodes": [
+                {"id": "n1", "label": "AlphaClass", "source_file": "src/alpha.py"},
+                {"id": "n2", "label": "BetaClass", "source_file": "src/beta.py"},
+            ]
+        }
+    }
+    result1 = lexical_index.build_lexical_index(graphs_by_repo, {})
+    result2 = lexical_index.build_lexical_index(graphs_by_repo, {})
+    assert result1.data == result2.data  # deterministic given identical input
+    assert result1.stats.documents == 2
+
+    label_postings = result1.data["postings"]["alphaclass"]
+    assert label_postings[0]["field"] == "label"
+    assert label_postings[0]["weight"] == lexical_index.FIELD_BOOST_LABEL
+
+    path_postings = result1.data["postings"]["alpha"]
+    assert any(p["field"] == "path" for p in path_postings)
+
+
+def test_build_lexical_index_alias_exact_and_node_id_index():
+    graphs_by_repo = {
+        "repo.a": {"nodes": [{"id": "n1", "label": "TimeService", "source_file": "src/TimeService.php"}]}
+    }
+    result = lexical_index.build_lexical_index(graphs_by_repo, {})
+    assert "timeservice" in result.data["alias_exact"]
+    entry = result.data["alias_exact"]["timeservice"][0]
+    assert entry["repo"] == "repo.a"
+    assert "repo.a\x1fn1" in result.data["node_id_index"]
+
+
+def test_pipeline_publishes_lexical_index_artifact(env):
+    env.add_repo("acme.a", "acme", "a", "acme-a", graph_fixture="repo_a.json")
+    env.write_registry()
+    settings = env.settings()
+
+    report = run(settings)
+
+    assert report.published, report.publish_blocked_reason
+    assert not report.skipped_stages  # lexical-index no longer skipped
+    assert report.lexical_index_stats["documents"] > 0
+
+    lexical_path = settings.global_dir / "current" / lexical_index.LEXICAL_INDEX_FILENAME
+    assert lexical_path.is_file()
+    data = json.loads(lexical_path.read_text(encoding="utf-8"))
+    assert data["tokenizer_version"] == lexical_index.TOKENIZER_VERSION
+    assert data["postings"]
+
+    manifest = json.loads((settings.global_dir / "current" / "generation-manifest.json").read_text(encoding="utf-8"))
+    assert manifest["lexical_index_tokenizer_version"] == lexical_index.TOKENIZER_VERSION

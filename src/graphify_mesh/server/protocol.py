@@ -1,0 +1,62 @@
+"""Newline-delimited JSON-RPC 2.0 stdio transport (WS5).
+
+The MCP stdio transport is exactly one complete JSON-RPC 2.0 message per
+line on stdin/stdout — no Content-Length framing (unlike LSP), no
+multi-line messages. Stdlib `json` + `sys` implement this completely; see
+`graphify_mesh.server/__init__.py` for the full dependency-decision rationale
+(no `mcp` SDK package, no third-party transport library).
+
+Exits cleanly on stdin EOF (WS6: "companion server must exit cleanly on
+stdin close" — the observed 10-stale-`graphify.serve`-process leak,
+~1.6GB RSS, was from sessions that did NOT do this). `serve()` is a plain
+`for line in stream` loop: it returns (never raises, never hangs) the
+moment the client closes its end of the pipe.
+"""
+from __future__ import annotations
+
+import json
+import sys
+from typing import Callable, Iterator, Optional
+
+# `handler(message) -> response-dict | None`. `None` means "this message was
+# a JSON-RPC notification (no `id`), so JSON-RPC 2.0 forbids a response" —
+# never write a response for those.
+JsonRpcHandler = Callable[[dict], Optional[dict]]
+
+
+def read_messages(stream=None) -> Iterator[dict]:
+    stream = stream if stream is not None else sys.stdin
+    for raw_line in stream:
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(message, dict):
+            yield message
+
+
+def write_message(message: dict, stream=None) -> None:
+    stream = stream if stream is not None else sys.stdout
+    stream.write(json.dumps(message) + "\n")
+    stream.flush()
+
+
+def error_response(request_id, code: int, message: str) -> dict:
+    return {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}
+
+
+def result_response(request_id, result: dict) -> dict:
+    return {"jsonrpc": "2.0", "id": request_id, "result": result}
+
+
+def serve(handler: JsonRpcHandler, in_stream=None, out_stream=None) -> None:
+    """Blocking dispatch loop. Returns (does not raise) the instant
+    `in_stream` hits EOF — the only clean-exit contract this transport
+    needs (WS6)."""
+    for message in read_messages(in_stream):
+        response = handler(message)
+        if response is not None:
+            write_message(response, out_stream)

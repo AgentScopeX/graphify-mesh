@@ -1,0 +1,12 @@
+{
+  "directed": false,
+  "multigraph": false,
+  "graph": {},
+  "nodes": [
+    {"id": "b1", "label": "BetaService", "source_file": "src/beta.py", "community": 0, "community_name": "Beta Domain"},
+    {"id": "b2", "label": "beta_util", "source_file": "src/beta.py", "community": 0, "community_name": "Beta Domain"}
+  ],
+  "links": [
+    {"source": "b1", "target": "b2", "relation": "calls"}
+  ]
+}

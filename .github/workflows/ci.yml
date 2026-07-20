@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install the upstream graphify CLI (required by the test suite)
+        # graphify is not on PyPI; the sync engine imports graphify.build and
+        # the test suite exercises real merge-tag behavior against it.
+        run: pip install "graphifyy @ git+https://github.com/safishamsi/graphifyy"
+
+      - name: Install graphify-mesh with test extras
+        run: pip install -e ".[test]"
+
+      - name: Run the test suite
+        run: python -m pytest tests/ -q
+
+      - name: Smoke-test the console scripts
+        run: |
+          graphify-mesh-sync --help
+          graphify-mesh-server --help
+          graphify-mesh-reap --help

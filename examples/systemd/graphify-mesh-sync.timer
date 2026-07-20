@@ -1,0 +1,14 @@
+[Unit]
+Description=Timer for graphify-mesh-sync.service
+# EXAMPLE unit. Tune the cadence to your repo count and how fresh you need
+# the merged graph to be.
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=15min
+AccuracySec=1min
+RandomizedDelaySec=60
+Unit=graphify-mesh-sync.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,30 @@
+{
+  "repos": [
+    {
+      "repo_id": "example-org.backend-a",
+      "root": "/path/to/your/checkouts/backend-a",
+      "collection_path": "/path/to/your/graph-mesh/graphify/example-org/backend-a",
+      "enabled": true
+    },
+    {
+      "repo_id": "example-org.frontend-b",
+      "root": "/path/to/your/checkouts/frontend-b",
+      "collection_path": "/path/to/your/graph-mesh/graphify/example-org/frontend-b",
+      "enabled": true
+    },
+    {
+      "repo_id": "example-org.infra-c",
+      "root": "/path/to/your/checkouts/infra-c",
+      "collection_path": "/path/to/your/graph-mesh/graphify/example-org/infra-c",
+      "enabled": true
+    },
+    {
+      "repo_id": "example-org.service-x",
+      "root": "/path/to/your/checkouts/service-x",
+      "collection_path": "/path/to/your/graph-mesh/graphify/example-org/service-x",
+      "enabled": false
+    }
+  ],
+  "disabled": [],
+  "external_roots": []
+}

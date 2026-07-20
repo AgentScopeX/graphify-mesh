@@ -1,0 +1,20 @@
+[Unit]
+Description=graphify-mesh sync - inventory + merge + publish engine (single run)
+# EXAMPLE unit. Edit every /path/to/... placeholder below before installing.
+# Install as a user unit, e.g.:
+#   cp examples/systemd/graphify-mesh-sync.{service,timer} ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now graphify-mesh-sync.timer
+
+[Service]
+Type=oneshot
+# Edit: directory that contains your graph-mesh root (where graphify/global/ lives).
+WorkingDirectory=/path/to/your/workspace
+# Edit: EnvironmentFile is parsed as KEY=VALUE lines (NOT sourced by a shell).
+EnvironmentFile=/path/to/your/workspace/graphify-mesh-sync.env
+# Edit: path to the graphify-mesh-sync console script inside your venv/pipx install.
+ExecStart=/path/to/your/venv/bin/graphify-mesh-sync --once
+TimeoutStartSec=1800
+MemoryMax=2G
+
+[Install]
+WantedBy=default.target
