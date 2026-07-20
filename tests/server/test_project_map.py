@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from conftest import build_generation, key_for, make_link, make_node
+
 from graphify_mesh.server import ranking
 from graphify_mesh.server.project_map import project_map
-from conftest import build_generation, key_for, make_link, make_node
 
 
 def test_project_map_unresolved_when_repo_not_in_current_generation():

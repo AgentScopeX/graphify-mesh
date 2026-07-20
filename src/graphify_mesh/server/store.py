@@ -22,6 +22,7 @@ callers never supply an arbitrary filesystem path that gets cached per-path
 here — `project_map(repo)` etc. all resolve against the single in-memory
 generation state below.
 """
+
 from __future__ import annotations
 
 import json
@@ -30,12 +31,11 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from graphify_mesh.server.config import ServerConfig
 from graphify_mesh.sync.embedding import node_key
 from graphify_mesh.sync.lexical_index import TOKENIZER_VERSION as EXPECTED_TOKENIZER_VERSION
 from graphify_mesh.sync.publish import output_hash
 from graphify_mesh.sync.validate import validate_generation_manifest
-
-from graphify_mesh.server.config import ServerConfig
 
 log = logging.getLogger("graphify_mesh.server.store")
 
@@ -56,7 +56,9 @@ class Generation:
     node_by_id: dict = field(default_factory=dict)
     nodes_by_repo: dict = field(default_factory=dict)
     adjacency: dict = field(default_factory=dict)  # node_id -> list[(neighbor_id, edge_data)]
-    key_by_node_id: dict = field(default_factory=dict)  # graph node id -> durable logical-ref key (C27)
+    key_by_node_id: dict = field(
+        default_factory=dict
+    )  # graph node id -> durable logical-ref key (C27)
     node_id_by_key: dict = field(default_factory=dict)  # inverse of key_by_node_id
 
     def build_indexes(self) -> None:
@@ -95,13 +97,21 @@ def validate_manifest_consistency(manifest: dict, graph: dict, lexical: dict) ->
     actual_nodes = len(graph.get("nodes", []))
     actual_edges = len(graph.get("links", graph.get("edges", [])))
     if expected_nodes is not None and expected_nodes != actual_nodes:
-        errors.append(f"generation-manifest: output_node_count={expected_nodes} but graph has {actual_nodes} nodes")
+        errors.append(
+            f"generation-manifest: output_node_count={expected_nodes} "
+            f"but graph has {actual_nodes} nodes"
+        )
     if expected_edges is not None and expected_edges != actual_edges:
-        errors.append(f"generation-manifest: output_edge_count={expected_edges} but graph has {actual_edges} edges")
+        errors.append(
+            f"generation-manifest: output_edge_count={expected_edges} "
+            f"but graph has {actual_edges} edges"
+        )
 
     expected_hash = manifest.get("output_hash")
     if expected_hash is not None and expected_hash != output_hash(graph):
-        errors.append("generation-manifest: output_hash does not match recomputed hash of global-graph.json")
+        errors.append(
+            "generation-manifest: output_hash does not match recomputed hash of global-graph.json"
+        )
 
     manifest_tok = manifest.get("lexical_index_tokenizer_version")
     lexical_tok = lexical.get("tokenizer_version") if isinstance(lexical, dict) else None
@@ -113,7 +123,8 @@ def validate_manifest_consistency(manifest: dict, graph: dict, lexical: dict) ->
     if lexical_tok is not None and lexical_tok != EXPECTED_TOKENIZER_VERSION:
         errors.append(
             f"lexical-index: tokenizer_version={lexical_tok!r} is not a version this server "
-            f"understands (expected {EXPECTED_TOKENIZER_VERSION!r}) — refusing to serve stale-shaped index"
+            f"understands (expected {EXPECTED_TOKENIZER_VERSION!r}) — "
+            "refusing to serve stale-shaped index"
         )
     return errors
 
@@ -199,7 +210,9 @@ class GenerationStore:
         lexical = _read_json(current / "lexical-index.json") or {}
 
         if manifest is None or graph is None:
-            log.warning("graphify-mesh: reload skipped — manifest or graph unreadable at %s", current)
+            log.warning(
+                "graphify-mesh: reload skipped — manifest or graph unreadable at %s", current
+            )
             # Always surface the rejection in `degraded`, even when a
             # previously-loaded generation keeps serving (see module
             # docstring: "the reload is REJECTED ... with `degraded`
@@ -216,7 +229,11 @@ class GenerationStore:
                 len(errors),
                 "; ".join(errors[:3]),
             )
-            reason = "no_consistent_generation_available" if self._generation is None else "reload_rejected_previous_generation_still_serving"
+            reason = (
+                "no_consistent_generation_available"
+                if self._generation is None
+                else "reload_rejected_previous_generation_still_serving"
+            )
             self.degraded = [reason] + errors[:3]
             # All-or-nothing: keep serving whatever was already loaded (if
             # anything), never swap in the inconsistent one.
@@ -242,7 +259,8 @@ class GenerationStore:
         self.ensure_fresh()
         if self._generation is None:
             raise GenerationUnavailableError(
-                "no consistent published generation is available yet (fresh install, or every publish so far "
+                "no consistent published generation is available yet "
+                "(fresh install, or every publish so far "
                 "failed manifest consistency) — run the graphify-mesh-sync pipeline at least once"
             )
         return self._generation

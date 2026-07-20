@@ -21,14 +21,46 @@ def _merged_graph() -> dict:
         "multigraph": False,
         "graph": {},
         "nodes": [
-            {"id": "example-org.styleguide::a1", "label": "AlphaClass", "repo_tag": "example-org.styleguide", "community": 0, "community_name": "Alpha Domain"},
-            {"id": "example-org.styleguide::a2", "label": "alpha_helper", "repo_tag": "example-org.styleguide", "community": 0, "community_name": "Alpha Domain"},
-            {"id": "example-org.services::b1", "label": "BetaService", "repo_tag": "example-org.services", "community": 0, "community_name": "Beta Domain"},
-            {"id": "example-org.services::b2", "label": "beta_util", "repo_tag": "example-org.services", "community": 0, "community_name": "Beta Domain"},
+            {
+                "id": "example-org.styleguide::a1",
+                "label": "AlphaClass",
+                "repo_tag": "example-org.styleguide",
+                "community": 0,
+                "community_name": "Alpha Domain",
+            },
+            {
+                "id": "example-org.styleguide::a2",
+                "label": "alpha_helper",
+                "repo_tag": "example-org.styleguide",
+                "community": 0,
+                "community_name": "Alpha Domain",
+            },
+            {
+                "id": "example-org.services::b1",
+                "label": "BetaService",
+                "repo_tag": "example-org.services",
+                "community": 0,
+                "community_name": "Beta Domain",
+            },
+            {
+                "id": "example-org.services::b2",
+                "label": "beta_util",
+                "repo_tag": "example-org.services",
+                "community": 0,
+                "community_name": "Beta Domain",
+            },
         ],
         "links": [
-            {"source": "example-org.styleguide::a1", "target": "example-org.styleguide::a2", "relation": "calls"},
-            {"source": "example-org.services::b1", "target": "example-org.services::b2", "relation": "calls"},
+            {
+                "source": "example-org.styleguide::a1",
+                "target": "example-org.styleguide::a2",
+                "relation": "calls",
+            },
+            {
+                "source": "example-org.services::b1",
+                "target": "example-org.services::b2",
+                "relation": "calls",
+            },
         ],
     }
 
@@ -136,26 +168,40 @@ def test_sig_unchanged_community_not_sent_to_label_on_second_run(tmp_path, monke
     stripped = naming.strip_project_community_attrs(_merged_graph())
 
     first = naming.run_naming(
-        str(FAKE_GRAPHIFY), naming_dir, staging_home, stripped, settings, health_check=lambda *a, **kw: True
+        str(FAKE_GRAPHIFY),
+        naming_dir,
+        staging_home,
+        stripped,
+        settings,
+        health_check=lambda *a, **kw: True,
     )
     assert first.labeling == naming.LABELING_OK
     # First run: both communities are brand-new -> both get relabeled by the LLM.
     assert sorted(first.changed_cids) == ["0", "1"]
 
-    entries_after_first = [json.loads(line) for line in call_log.read_text(encoding="utf-8").splitlines()]
+    entries_after_first = [
+        json.loads(line) for line in call_log.read_text(encoding="utf-8").splitlines()
+    ]
     label_entries = [e for e in entries_after_first if e["cmd"] == "label"]
     assert len(label_entries) == 1
     assert sorted(label_entries[0]["relabeled_cids"]) == [0, 1]
 
     # Second run over the SAME (unchanged) graph: nothing should be relabeled.
     second = naming.run_naming(
-        str(FAKE_GRAPHIFY), naming_dir, staging_home, first.graph_data, settings, health_check=lambda *a, **kw: True
+        str(FAKE_GRAPHIFY),
+        naming_dir,
+        staging_home,
+        first.graph_data,
+        settings,
+        health_check=lambda *a, **kw: True,
     )
     assert second.labeling == naming.LABELING_OK
     assert second.changed_cids == []
 
-    entries_after_second = [json.loads(line) for line in call_log.read_text(encoding="utf-8").splitlines()]
-    new_entries = entries_after_second[len(entries_after_first):]
+    entries_after_second = [
+        json.loads(line) for line in call_log.read_text(encoding="utf-8").splitlines()
+    ]
+    new_entries = entries_after_second[len(entries_after_first) :]
     assert all(e["cmd"] != "label" for e in new_entries)  # label was never invoked this run
 
 
@@ -170,7 +216,12 @@ def test_partial_change_only_relabels_changed_community(tmp_path, monkeypatch):
     stripped = naming.strip_project_community_attrs(_merged_graph())
 
     first = naming.run_naming(
-        str(FAKE_GRAPHIFY), naming_dir, staging_home, stripped, settings, health_check=lambda *a, **kw: True
+        str(FAKE_GRAPHIFY),
+        naming_dir,
+        staging_home,
+        stripped,
+        settings,
+        health_check=lambda *a, **kw: True,
     )
     assert first.labeling == naming.LABELING_OK
 
@@ -178,12 +229,27 @@ def test_partial_change_only_relabels_changed_community(tmp_path, monkeypatch):
     # its sig changes; example-org.services is untouched.
     mutated = json.loads(json.dumps(first.graph_data))
     mutated["nodes"].append(
-        {"id": "example-org.styleguide::a3", "label": "alpha_extra", "repo_tag": "example-org.styleguide"}
+        {
+            "id": "example-org.styleguide::a3",
+            "label": "alpha_extra",
+            "repo_tag": "example-org.styleguide",
+        }
     )
-    mutated["links"].append({"source": "example-org.styleguide::a1", "target": "example-org.styleguide::a3", "relation": "calls"})
+    mutated["links"].append(
+        {
+            "source": "example-org.styleguide::a1",
+            "target": "example-org.styleguide::a3",
+            "relation": "calls",
+        }
+    )
 
     second = naming.run_naming(
-        str(FAKE_GRAPHIFY), naming_dir, staging_home, mutated, settings, health_check=lambda *a, **kw: True
+        str(FAKE_GRAPHIFY),
+        naming_dir,
+        staging_home,
+        mutated,
+        settings,
+        health_check=lambda *a, **kw: True,
     )
     assert second.labeling == naming.LABELING_OK
 
@@ -201,7 +267,9 @@ def test_backend_mismatch_raises_and_never_calls_cluster_only(tmp_path, monkeypa
     (stub_root / "graspologic").mkdir(parents=True)
     (stub_root / "graspologic" / "__init__.py").write_text("", encoding="utf-8")
     interp = tmp_path / "interp_with_graspologic.sh"
-    interp.write_text(f'#!/bin/sh\nexec env PYTHONPATH="{stub_root}" "{sys.executable}" "$@"\n', encoding="utf-8")
+    interp.write_text(
+        f'#!/bin/sh\nexec env PYTHONPATH="{stub_root}" "{sys.executable}" "$@"\n', encoding="utf-8"
+    )
     interp.chmod(interp.stat().st_mode | stat.S_IEXEC)
 
     mismatched_bin = tmp_path / "graphify_mismatched"
@@ -233,8 +301,20 @@ def test_backend_mismatch_raises_and_never_calls_cluster_only(tmp_path, monkeypa
 
 
 def test_pipeline_strip_then_relabel_no_per_project_leakage(env):
-    env.add_repo("example-org.styleguide", "example-org", "styleguide", "styleguide.example-org.dev.lo", "repo_a.json")
-    env.add_repo("example-org.services", "example-org", "services", "services.example-org.dev.lo", "repo_b.json")
+    env.add_repo(
+        "example-org.styleguide",
+        "example-org",
+        "styleguide",
+        "styleguide.example-org.dev.lo",
+        "repo_a.json",
+    )
+    env.add_repo(
+        "example-org.services",
+        "example-org",
+        "services",
+        "services.example-org.dev.lo",
+        "repo_b.json",
+    )
     env.write_registry()
     settings = env.settings(ollama_health_check=lambda *a, **kw: True)
 
@@ -244,7 +324,9 @@ def test_pipeline_strip_then_relabel_no_per_project_leakage(env):
     assert report.labeling == "ok"
     assert report.clustering_backend == "louvain"
 
-    graph = json.loads((settings.global_dir / "current" / "global-graph.json").read_text(encoding="utf-8"))
+    graph = json.loads(
+        (settings.global_dir / "current" / "global-graph.json").read_text(encoding="utf-8")
+    )
     names = {n.get("community_name") for n in graph["nodes"]}
     # None of the original per-project names survived into the published output.
     assert "Alpha Domain" not in names
@@ -253,14 +335,28 @@ def test_pipeline_strip_then_relabel_no_per_project_leakage(env):
         assert node.get("community_name")  # every clustered node got a real name
         assert not node["community_name"].startswith("Community ")
 
-    manifest = json.loads((settings.global_dir / "current" / "generation-manifest.json").read_text(encoding="utf-8"))
+    manifest = json.loads(
+        (settings.global_dir / "current" / "generation-manifest.json").read_text(encoding="utf-8")
+    )
     assert manifest["clustering_backend"] == "louvain"
     assert manifest["labeling"] == "ok"
 
 
 def test_pipeline_degraded_mode_no_leakage_and_restores_last_global(env):
-    env.add_repo("example-org.styleguide", "example-org", "styleguide", "styleguide.example-org.dev.lo", "repo_a.json")
-    env.add_repo("example-org.services", "example-org", "services", "services.example-org.dev.lo", "repo_b.json")
+    env.add_repo(
+        "example-org.styleguide",
+        "example-org",
+        "styleguide",
+        "styleguide.example-org.dev.lo",
+        "repo_a.json",
+    )
+    env.add_repo(
+        "example-org.services",
+        "example-org",
+        "services",
+        "services.example-org.dev.lo",
+        "repo_b.json",
+    )
     env.write_registry()
 
     # First (healthy) run establishes a real published global generation
@@ -269,7 +365,11 @@ def test_pipeline_degraded_mode_no_leakage_and_restores_last_global(env):
     first = run(settings_healthy)
     assert first.published
     assert first.labeling == "ok"
-    first_graph = json.loads((env.mesh_root / "graphify" / "global" / "current" / "global-graph.json").read_text(encoding="utf-8"))
+    first_graph = json.loads(
+        (env.mesh_root / "graphify" / "global" / "current" / "global-graph.json").read_text(
+            encoding="utf-8"
+        )
+    )
     first_names_by_id = {n["id"]: n.get("community_name") for n in first_graph["nodes"]}
     assert all(first_names_by_id.values())
 
@@ -283,7 +383,11 @@ def test_pipeline_degraded_mode_no_leakage_and_restores_last_global(env):
     assert second.published
     assert second.labeling == "degraded"
 
-    second_graph = json.loads((env.mesh_root / "graphify" / "global" / "current" / "global-graph.json").read_text(encoding="utf-8"))
+    second_graph = json.loads(
+        (env.mesh_root / "graphify" / "global" / "current" / "global-graph.json").read_text(
+            encoding="utf-8"
+        )
+    )
     names_by_id = {n["id"]: n.get("community_name") for n in second_graph["nodes"]}
 
     # Every node that existed in the last published GLOBAL generation keeps
@@ -307,7 +411,9 @@ def test_pipeline_backend_mismatch_blocks_publish_end_to_end(env):
     (stub_root / "graspologic").mkdir(parents=True)
     (stub_root / "graspologic" / "__init__.py").write_text("", encoding="utf-8")
     interp = env.tmp_path / "interp_with_graspologic.sh"
-    interp.write_text(f'#!/bin/sh\nexec env PYTHONPATH="{stub_root}" "{sys.executable}" "$@"\n', encoding="utf-8")
+    interp.write_text(
+        f'#!/bin/sh\nexec env PYTHONPATH="{stub_root}" "{sys.executable}" "$@"\n', encoding="utf-8"
+    )
     interp.chmod(interp.stat().st_mode | stat.S_IEXEC)
 
     mismatched_bin = env.tmp_path / "graphify_mismatched"
@@ -323,7 +429,13 @@ def test_pipeline_backend_mismatch_blocks_publish_end_to_end(env):
     )
     mismatched_bin.chmod(mismatched_bin.stat().st_mode | stat.S_IEXEC)
 
-    env.add_repo("example-org.styleguide", "example-org", "styleguide", "styleguide.example-org.dev.lo", "repo_a.json")
+    env.add_repo(
+        "example-org.styleguide",
+        "example-org",
+        "styleguide",
+        "styleguide.example-org.dev.lo",
+        "repo_a.json",
+    )
     env.write_registry()
 
     settings = Settings.from_env(
@@ -341,7 +453,13 @@ def test_pipeline_backend_mismatch_blocks_publish_end_to_end(env):
 
 
 def test_pipeline_degraded_mode_never_invokes_cluster_only_or_label(env):
-    env.add_repo("example-org.styleguide", "example-org", "styleguide", "styleguide.example-org.dev.lo", "repo_a.json")
+    env.add_repo(
+        "example-org.styleguide",
+        "example-org",
+        "styleguide",
+        "styleguide.example-org.dev.lo",
+        "repo_a.json",
+    )
     env.write_registry()
     settings = env.settings(ollama_health_check=lambda *a, **kw: False)
 

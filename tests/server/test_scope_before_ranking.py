@@ -4,18 +4,19 @@ module docstring for the named failure mode this guards against: a large
 repo's global top-K can crowd out every current-project hit before a
 post-hoc filter ever runs).
 """
+
 from __future__ import annotations
+
+from conftest import build_generation, fake_embed_query_fn, key_for, make_node
 
 from graphify_mesh.server import ranking
 from graphify_mesh.server.retrieval import lexical_candidates, rank
-from conftest import build_generation, fake_embed_query_fn, key_for, make_node
-
 
 CURRENT_REPO = "zzz.current"  # deliberately sorts AFTER the global repo id below
-GLOBAL_REPO = "aaa.global"     # so a tied lexical score's deterministic (key-ascending)
-                               # tie-break puts every global-repo hit ahead of the
-                               # current-repo one — the exact ordering needed to
-                               # demonstrate the crowding-out failure mode.
+GLOBAL_REPO = "aaa.global"  # so a tied lexical score's deterministic (key-ascending)
+# tie-break puts every global-repo hit ahead of the
+# current-repo one — the exact ordering needed to
+# demonstrate the crowding-out failure mode.
 
 
 def _build_crowding_fixture():

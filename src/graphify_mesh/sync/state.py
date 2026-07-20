@@ -4,6 +4,7 @@ Used to decide `graphify update` (code-only change) vs `graphify extract`
 (semantic/docs/config change) per WS1 item 2, and to detect dirty worktrees
 (WS1 item 4) without ever running a mutating git command.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -22,7 +23,11 @@ class SourceDigest:
     file_count: int
 
     def to_dict(self) -> dict:
-        return {"code_hash": self.code_hash, "semantic_hash": self.semantic_hash, "file_count": self.file_count}
+        return {
+            "code_hash": self.code_hash,
+            "semantic_hash": self.semantic_hash,
+            "file_count": self.file_count,
+        }
 
 
 def compute_source_manifest(root: Path) -> SourceDigest:
@@ -60,7 +65,9 @@ def compute_source_manifest(root: Path) -> SourceDigest:
             h.update(b"\n")
         return h.hexdigest()[:16]
 
-    return SourceDigest(code_hash=_hash(code_entries), semantic_hash=_hash(semantic_entries), file_count=count)
+    return SourceDigest(
+        code_hash=_hash(code_entries), semantic_hash=_hash(semantic_entries), file_count=count
+    )
 
 
 def load_state(state_path: Path) -> dict:
@@ -82,7 +89,7 @@ def is_worktree_dirty(root: Path) -> bool:
         return False
     try:
         result = subprocess.run(
-            ["git", "status", "--porcelain"],
+            ["git", "status", "--porcelain"],  # noqa: S607 - system git from PATH, read-only status
             cwd=str(root),
             capture_output=True,
             text=True,

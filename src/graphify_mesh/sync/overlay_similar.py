@@ -23,6 +23,7 @@ Per-pair cap: in addition to the per-node `top_k` cap, no more than
 the same two repos in one generation, so two large/near-duplicate repos
 can't flood the overlay with edges (WS4 ship-order item 2: "per-pair cap").
 """
+
 from __future__ import annotations
 
 from graphify_mesh.sync.embed_similarity import (
@@ -95,7 +96,10 @@ def _fallback_exact_match_pairs(
                 pair_key = frozenset((node_a_key, node_b_key))
                 if pair_key in seen_pairs:
                     continue
-                if per_node_emitted.get(node_a_key, 0) >= top_k or per_node_emitted.get(node_b_key, 0) >= top_k:
+                if (
+                    per_node_emitted.get(node_a_key, 0) >= top_k
+                    or per_node_emitted.get(node_b_key, 0) >= top_k
+                ):
                     continue
                 repo_pair_key = frozenset((repo_a, repo_b))
                 if per_repo_pair_emitted.get(repo_pair_key, 0) >= MAX_EDGES_PER_REPO_PAIR:
@@ -103,7 +107,9 @@ def _fallback_exact_match_pairs(
                 seen_pairs.add(pair_key)
                 per_node_emitted[node_a_key] = per_node_emitted.get(node_a_key, 0) + 1
                 per_node_emitted[node_b_key] = per_node_emitted.get(node_b_key, 0) + 1
-                per_repo_pair_emitted[repo_pair_key] = per_repo_pair_emitted.get(repo_pair_key, 0) + 1
+                per_repo_pair_emitted[repo_pair_key] = (
+                    per_repo_pair_emitted.get(repo_pair_key, 0) + 1
+                )
                 edges.append(
                     OverlayEdge(
                         type="similar_approach",
@@ -112,7 +118,8 @@ def _fallback_exact_match_pairs(
                         provenance=PLACEHOLDER_PROVENANCE,
                         confidence=PLACEHOLDER_CONFIDENCE,
                         evidence=(
-                            f"placeholder fallback scorer (no embedding available): exact label+community match "
+                            "placeholder fallback scorer (no embedding available): "
+                            "exact label+community match "
                             f"({norm_label!r} in {community_name!r})"
                         ),
                     )

@@ -15,17 +15,17 @@ expects per-repo raw graphs that are no longer available at query time (only
 the merged, already-repo-attributed graph is published) — the ALGORITHM is
 shared, only the input data shape differs.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from graphify_mesh.sync.lexical_index import normalize_alias_query
-from graphify_mesh.sync.overlay_refs import LogicalRef
-from graphify_mesh.sync.overlay_similar import normalize_label
-
 from graphify_mesh.server import ranking
 from graphify_mesh.server.retrieval import Hit, _hit_from_key
 from graphify_mesh.server.store import Generation
+from graphify_mesh.sync.lexical_index import normalize_alias_query
+from graphify_mesh.sync.overlay_refs import LogicalRef
+from graphify_mesh.sync.overlay_similar import normalize_label
 
 FALLBACK_SCORE = 0.4
 STRUCTURAL_NEIGHBOR_SCORE = 0.5
@@ -88,7 +88,9 @@ def same_repo_structural_neighbors(key: str, generation: Generation) -> list[str
     return neighbors
 
 
-def fallback_exact_match(key: str, generation: Generation, cross_repo_only: bool, top_k: int) -> list[str]:
+def fallback_exact_match(
+    key: str, generation: Generation, cross_repo_only: bool, top_k: int
+) -> list[str]:
     """Documented fallback for trivial/unembedded nodes (deliverable 7):
     exact normalized-label + same-community_name match, mirroring
     `graphify_mesh.sync.overlay_similar`'s build-time placeholder scorer exactly
@@ -117,7 +119,9 @@ def fallback_exact_match(key: str, generation: Generation, cross_repo_only: bool
     return sorted(matches)[:top_k]
 
 
-def find_similar(query: str, generation: Generation, k: int, cross_repo_only: bool = False) -> SimilarResult:
+def find_similar(
+    query: str, generation: Generation, k: int, cross_repo_only: bool = False
+) -> SimilarResult:
     k = max(1, min(k, ranking.MAX_K))
     resolved_key = resolve_key(query, generation)
     if resolved_key is None:

@@ -24,6 +24,7 @@ none exist yet (no labeled ground truth has been collected). Until they do,
 default; it is a named constant specifically so it's easy to find and
 override once real tuning data exists (see `overlay_similar.py` callers).
 """
+
 from __future__ import annotations
 
 import math
@@ -39,7 +40,11 @@ LSH_SEED = 1337
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:
-    dot = sum(x * y for x, y in zip(a, b))
+    # Mixed-dimension vectors (e.g. a shard embedded under two different
+    # models) carry no comparable signal — score them 0 instead of raising.
+    if len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b, strict=True))
     norm_a = math.sqrt(sum(x * x for x in a))
     norm_b = math.sqrt(sum(y * y for y in b))
     if norm_a == 0.0 or norm_b == 0.0:
@@ -48,14 +53,17 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
 
 
 def _random_hyperplanes(dim: int, num_planes: int, seed: int) -> list[list[float]]:
-    rng = random.Random(seed)
+    rng = random.Random(seed)  # noqa: S311 - deterministic LSH hyperplanes, not cryptographic
     return [[rng.gauss(0.0, 1.0) for _ in range(dim)] for _ in range(num_planes)]
 
 
 def _bucket_signature(vector: list[float], hyperplanes: list[list[float]]) -> str:
     bits = []
     for plane in hyperplanes:
-        dot = sum(v * p for v, p in zip(vector, plane))
+        # strict=False: a vector shorter than the plane (mixed-dim shard)
+        # still buckets; final scoring goes through cosine_similarity which
+        # rejects mixed dimensions.
+        dot = sum(v * p for v, p in zip(vector, plane, strict=False))
         bits.append("1" if dot >= 0 else "0")
     return "".join(bits)
 

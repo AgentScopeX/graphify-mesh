@@ -13,6 +13,7 @@ Every logical ref this module produces is resolved fresh against the current
 generation's inputs (C27) — nothing here persists a raw graph node id across
 runs.
 """
+
 from __future__ import annotations
 
 import json
@@ -56,7 +57,9 @@ def load_graphs_by_repo(graph_paths_by_repo: dict[str, Path]) -> dict[str, dict]
         try:
             graphs[repo_id] = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
-            log.warning("overlay: could not load per-repo graph for %s (%s): %s", repo_id, path, exc)
+            log.warning(
+                "overlay: could not load per-repo graph for %s (%s): %s", repo_id, path, exc
+            )
     return graphs
 
 
@@ -113,10 +116,12 @@ def build_overlay(
     # swagger/openapi spec exists in any registered repo, see overlay_api.py
     # module docstring).
     providers_by_repo = {
-        repo_id: extract_symfony_route_providers(repo_id, root) for repo_id, root in repo_roots_by_id.items()
+        repo_id: extract_symfony_route_providers(repo_id, root)
+        for repo_id, root in repo_roots_by_id.items()
     }
     consumer_candidates_by_repo = {
-        repo_id: extract_consumer_literal_paths(repo_id, root) for repo_id, root in repo_roots_by_id.items()
+        repo_id: extract_consumer_literal_paths(repo_id, root)
+        for repo_id, root in repo_roots_by_id.items()
     }
     edges.extend(match_provides_consumes_edges(providers_by_repo, consumer_candidates_by_repo))
 
@@ -124,7 +129,9 @@ def build_overlay(
     for edge in edges:
         counts[edge.type] = counts.get(edge.type, 0) + 1
 
-    return OverlayResult(edges=edges, edge_counts_by_type=counts, manual_relation_count=len(manual_edges))
+    return OverlayResult(
+        edges=edges, edge_counts_by_type=counts, manual_relation_count=len(manual_edges)
+    )
 
 
 def overlay_artifact(result: OverlayResult, generation_id: str, created_at: str) -> dict:

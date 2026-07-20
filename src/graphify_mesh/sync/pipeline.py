@@ -16,6 +16,7 @@ graph (C5). The WS3 embedding index (id-map + per-repo shards under
 the last N generations) once publish actually happens — see
 `embedding.persist_generation`, called from `_finalize` below.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -27,7 +28,17 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from graphify_mesh.sync import embedding, graphify_cli, lexical_index, naming, overlay, progress, publish, repo_tags, validate
+from graphify_mesh.sync import (
+    embedding,
+    graphify_cli,
+    lexical_index,
+    naming,
+    overlay,
+    progress,
+    publish,
+    repo_tags,
+    validate,
+)
 from graphify_mesh.sync.backend import assert_pinned_backend
 from graphify_mesh.sync.config import (
     CODE_EXTENSIONS,
@@ -38,7 +49,12 @@ from graphify_mesh.sync.config import (
 from graphify_mesh.sync.discovery import assert_registry_containment, discover_filesystem, reconcile
 from graphify_mesh.sync.locking import transaction_lock
 from graphify_mesh.sync.registry import Registry, load_registry, registry_hash
-from graphify_mesh.sync.state import compute_source_manifest, file_content_hash, load_state, save_state
+from graphify_mesh.sync.state import (
+    compute_source_manifest,
+    file_content_hash,
+    load_state,
+    save_state,
+)
 from graphify_mesh.sync.sync_project import (
     ACTION_BOOTSTRAP,
     ACTION_SKIP,
@@ -151,7 +167,9 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
 
     state = load_state(settings.state_path)
     broken_ids = set(reconciliation.broken)
-    active_repos = [e for e in _repos_for_run(registry, reconciliation.to_dict()) if e.repo_id not in broken_ids]
+    active_repos = [
+        e for e in _repos_for_run(registry, reconciliation.to_dict()) if e.repo_id not in broken_ids
+    ]
 
     # Broken-symlink projects (WS1 item 1: "reported as broken, not crashed")
     # are handled separately: their source root is unreachable this cycle so
@@ -179,7 +197,9 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
             graph_paths_by_repo[repo_id] = entry.collection_path / "graph.json"
         if entry is not None:
             repo_roots_by_id[repo_id] = entry.root
-        report.project_actions.append({"repo_id": repo_id, "action": "none", "status": "broken_symlink"})
+        report.project_actions.append(
+            {"repo_id": repo_id, "action": "none", "status": "broken_symlink"}
+        )
 
     total_active = len(active_repos)
     bar = progress.ProgressBar(total_active, label="indexing")
@@ -196,26 +216,40 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
 
         if settings.dry_run:
             planned_status = "would_bootstrap" if action == ACTION_BOOTSTRAP else f"would_{action}"
-            report.project_actions.append({"repo_id": entry.repo_id, "action": action, "status": planned_status})
+            report.project_actions.append(
+                {"repo_id": entry.repo_id, "action": action, "status": planned_status}
+            )
             if has_graph:
                 graph_paths_by_repo[entry.repo_id] = graph_path
             bar.tick(i, f"{entry.repo_id}: {planned_status}")
             continue
 
         if action == ACTION_SKIP:
-            report.project_actions.append({"repo_id": entry.repo_id, "action": action, "status": "unchanged"})
+            report.project_actions.append(
+                {"repo_id": entry.repo_id, "action": action, "status": "unchanged"}
+            )
             graph_paths_by_repo[entry.repo_id] = graph_path
             log.info("[%d/%d] %s: unchanged, skipped", i, total_active, entry.repo_id)
             bar.tick(i, f"{entry.repo_id}: unchanged")
             continue
 
         outcome: ProjectOutcome = apply_action(
-            entry.repo_id, settings.graphify_bin, root, entry.collection_path, action, current_manifest
+            entry.repo_id,
+            settings.graphify_bin,
+            root,
+            entry.collection_path,
+            action,
+            current_manifest,
         )
         log.info("[%d/%d] %s: %s (%s)", i, total_active, entry.repo_id, outcome.status, action)
         bar.tick(i, f"{entry.repo_id}: {outcome.status}")
         report.project_actions.append(
-            {"repo_id": entry.repo_id, "action": action, "status": outcome.status, "reason": outcome.reason}
+            {
+                "repo_id": entry.repo_id,
+                "action": action,
+                "status": outcome.status,
+                "reason": outcome.reason,
+            }
         )
         if outcome.dirty_worktree:
             dirty_repos.append(entry.repo_id)
@@ -244,7 +278,10 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
         report.merge_ok = False
         report.merge_error = "no per-repo graphs available to merge"
     else:
-        log.info("merge: merging %d per-repo graphs (from empty, sorted order) ...", len(sorted_graph_paths))
+        log.info(
+            "merge: merging %d per-repo graphs (from empty, sorted order) ...",
+            len(sorted_graph_paths),
+        )
         merge_result = graphify_cli.run_merge_graphs(
             settings.graphify_bin, sorted_graph_paths, merged_out_path, staging_home
         )
@@ -268,9 +305,12 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
     graph_data = repo_tags.rewrite_repo_tags(graph_data, tag_to_repo_id)
     previous_manifest = publish.read_current_manifest(settings.global_dir)
     previous_global_graph = publish.read_current_global_graph(settings.global_dir)
-    previous_counts = None
+    previous_counts: tuple[int, int] | None = None
     if previous_manifest is not None:
-        previous_counts = (previous_manifest.get("output_node_count"), previous_manifest.get("output_edge_count"))
+        prev_nodes = previous_manifest.get("output_node_count")
+        prev_edges = previous_manifest.get("output_edge_count")
+        if isinstance(prev_nodes, int) and isinstance(prev_edges, int):
+            previous_counts = (prev_nodes, prev_edges)
 
     # WS2: unconditionally strip any per-project community/community_name
     # carried over via merge (C23), then run the naming stage on the
@@ -311,7 +351,9 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
         report.clustering_backend = naming_result.backend
         log.info("naming: %s (backend=%s)", naming_result.labeling, naming_result.backend)
         if naming_result.labeling == naming.LABELING_DEGRADED:
-            graph_data = naming.restore_last_global_community_names(naming_result.graph_data, previous_global_graph)
+            graph_data = naming.restore_last_global_community_names(
+                naming_result.graph_data, previous_global_graph
+            )
         else:
             graph_data = naming_result.graph_data
 
@@ -405,7 +447,9 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
         return report
 
     if not report.validation_ok:
-        report.publish_blocked_reason = "validation failed: " + "; ".join(report.validation_errors[:3])
+        report.publish_blocked_reason = "validation failed: " + "; ".join(
+            report.validation_errors[:3]
+        )
         _finalize(settings, staging_root, report, state, published_data=None, generation_id="")
         return report
 
@@ -417,9 +461,10 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
         return report
 
     generation_id = publish.make_generation_id(publish.output_hash(graph_data))
+    created_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     manifest = {
         "generation_id": generation_id,
-        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "created_at": created_at,
         "repo_input_hashes": {
             rid: file_content_hash(graph_paths_by_repo[rid]) for rid in sorted_repo_ids
         },
@@ -449,12 +494,14 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
         "lexical_index_tokenizer_version": lexical_index.TOKENIZER_VERSION,
         "lexical_index_stats": report.lexical_index_stats,
     }
-    gen_dir = publish.write_generation(settings.generations_dir, generation_id, graph_data, manifest)
+    gen_dir = publish.write_generation(
+        settings.generations_dir, generation_id, graph_data, manifest
+    )
     # WS4: overlay artifact is staged inside the SAME generation dir so it
     # flips atomically with global-graph.json/generation-manifest.json on
     # publish, but stays a wholly separate file — never merged into the
     # structural graph (C5).
-    overlay_data = overlay.overlay_artifact(overlay_result, generation_id, manifest["created_at"])
+    overlay_data = overlay.overlay_artifact(overlay_result, generation_id, created_at)
     publish.write_overlay(gen_dir, overlay_data)
     # WS5: lexical-index bundle artifact, same atomic-flip treatment.
     publish.write_lexical_index(gen_dir, lexical_result.data)
@@ -466,17 +513,29 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
     # skipped/degraded-with-nothing-new this run.
     if embeddings_staged_dir is not None:
         embedding.persist_generation(
-            settings.embeddings_dir, generation_id, embeddings_staged_dir, settings.keep_embedding_generations
+            settings.embeddings_dir,
+            generation_id,
+            embeddings_staged_dir,
+            settings.keep_embedding_generations,
         )
 
     report.published = True
     report.generation_id = generation_id
 
-    _finalize(settings, staging_root, report, state, published_data=manifest, generation_id=generation_id)
+    _finalize(
+        settings, staging_root, report, state, published_data=manifest, generation_id=generation_id
+    )
     return report
 
 
-def _finalize(settings: Settings, staging_root: Path, report: RunReport, state: dict, published_data, generation_id: str) -> None:
+def _finalize(
+    settings: Settings,
+    staging_root: Path,
+    report: RunReport,
+    state: dict,
+    published_data,
+    generation_id: str,
+) -> None:
     if not settings.dry_run:
         save_state(settings.state_path, state)
         status = {

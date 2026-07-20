@@ -6,6 +6,7 @@ directory-scoped conftest resolution is sensitive to multiple
 identically-named `conftest.py` files existing across the test tree when
 plain `import conftest` statements are involved elsewhere.
 """
+
 from __future__ import annotations
 
 import importlib.util

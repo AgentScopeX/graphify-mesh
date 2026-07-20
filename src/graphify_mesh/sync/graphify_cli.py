@@ -5,6 +5,7 @@ tests can point it at tests/graph-sync/fixtures/fake_graphify/graphify
 instead of the real CLI. GRAPHIFY_NO_BACKUP=1 (C22) is always set on the
 subprocess environment for update/extract/merge-graphs calls.
 """
+
 from __future__ import annotations
 
 import os
@@ -76,7 +77,7 @@ def _run(argv: list[str], cwd: Path | None, env: dict | None, timeout: int = 900
     if env:
         full_env.update(env)
     try:
-        proc = subprocess.run(
+        proc = subprocess.run(  # noqa: S603 - structured argv, no shell; binary from operator config
             argv,
             cwd=str(cwd) if cwd else None,
             env=full_env,
@@ -85,7 +86,9 @@ def _run(argv: list[str], cwd: Path | None, env: dict | None, timeout: int = 900
             timeout=timeout,
         )
     except subprocess.TimeoutExpired as exc:
-        return CliResult(returncode=124, stdout=exc.stdout or "", stderr=f"timeout: {exc}")
+        raw = exc.stdout or ""
+        partial = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
+        return CliResult(returncode=124, stdout=partial, stderr=f"timeout: {exc}")
     except OSError as exc:
         return CliResult(returncode=127, stdout="", stderr=f"exec error: {exc}")
     return CliResult(returncode=proc.returncode, stdout=proc.stdout, stderr=proc.stderr)
@@ -112,12 +115,19 @@ def run_extract(graphify_bin: str, root: Path) -> CliResult:
     return _run(argv, cwd=None, env=None)
 
 
-def run_merge_graphs(graphify_bin: str, graph_paths: list[Path], out_path: Path, staging_home: Path) -> CliResult:
+def run_merge_graphs(
+    graphify_bin: str, graph_paths: list[Path], out_path: Path, staging_home: Path
+) -> CliResult:
     """`graphify merge-graphs <sorted paths> --out <path>`, run with HOME
     pointed at a private staging directory for the duration of this call only
     (C17) so nothing touches the real ~/.graphify or the tracked mesh tree.
     """
-    argv = _base_argv(graphify_bin) + ["merge-graphs"] + [str(p) for p in graph_paths] + ["--out", str(out_path)]
+    argv = (
+        _base_argv(graphify_bin)
+        + ["merge-graphs"]
+        + [str(p) for p in graph_paths]
+        + ["--out", str(out_path)]
+    )
     staging_home.mkdir(parents=True, exist_ok=True)
     return _run(argv, cwd=None, env=_isolated_home_env(staging_home))
 

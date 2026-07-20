@@ -3,6 +3,7 @@
 All checks return (ok: bool, errors: list[str]) so the caller can aggregate
 everything before deciding to publish or not.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -44,9 +45,15 @@ def validate_shrink_guard(
     prev_nodes, prev_edges = previous_counts
     errors = []
     if new_nodes < prev_nodes:
-        errors.append(f"shrink-guard: new global graph has {new_nodes} nodes, previous published had {prev_nodes}")
+        errors.append(
+            f"shrink-guard: new global graph has {new_nodes} nodes, "
+            f"previous published had {prev_nodes}"
+        )
     if new_edges < prev_edges:
-        errors.append(f"shrink-guard: new global graph has {new_edges} edges, previous published had {prev_edges}")
+        errors.append(
+            f"shrink-guard: new global graph has {new_edges} edges, "
+            f"previous published had {prev_edges}"
+        )
     return ValidationResult(ok=not errors, errors=errors)
 
 
@@ -96,7 +103,9 @@ def validate_forbidden_edges(data: dict) -> ValidationResult:
         if not isinstance(link, dict):
             continue
         if link.get("cross_repo") is True:
-            errors.append(f"forbidden-edge: cross_repo:true edge {link.get('source')}->{link.get('target')}")
+            errors.append(
+                f"forbidden-edge: cross_repo:true edge {link.get('source')}->{link.get('target')}"
+            )
             continue
         rel = link.get("relation") or link.get("type")
         if rel not in FORBIDDEN_OVERLAY_RELATION_TYPES:
@@ -105,7 +114,10 @@ def validate_forbidden_edges(data: dict) -> ValidationResult:
         dst_repo = _repo_prefix(link.get("target"))
         if src_repo is not None and src_repo == dst_repo:
             continue  # same-repo edge, legitimate upstream-extracted data
-        errors.append(f"forbidden-edge: cross-repo overlay relation {rel!r} on {link.get('source')}->{link.get('target')}")
+        errors.append(
+            f"forbidden-edge: cross-repo overlay relation {rel!r} "
+            f"on {link.get('source')}->{link.get('target')}"
+        )
     return ValidationResult(ok=not errors, errors=errors)
 
 
@@ -116,7 +128,10 @@ def validate_community_names(data: dict, skip_labeling: bool) -> ValidationResul
     it via --skip-labeling (logged reason), since no labeling stage runs yet.
     """
     if skip_labeling:
-        return ValidationResult(ok=True, errors=["community-name check skipped: --skip-labeling (labeling not wired until WS2)"])
+        return ValidationResult(
+            ok=True,
+            errors=["community-name check skipped: --skip-labeling (labeling not wired until WS2)"],
+        )
     errors = []
     for node in data.get("nodes", []):
         if not isinstance(node, dict):

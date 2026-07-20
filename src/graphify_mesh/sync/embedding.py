@@ -55,6 +55,7 @@ Design notes (read before changing anything here):
     same "nothing durable happens unless publish happens" rule the rest of
     the pipeline already follows for naming/overlay artifacts.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -65,9 +66,9 @@ import re
 import shutil
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
 
 from graphify_mesh.sync.config import Settings, is_valid_http_base_url
 from graphify_mesh.sync.overlay_refs import LogicalRef
@@ -243,7 +244,9 @@ def build_snippet(source_root: Path | None, source_file: str | None, line: int |
     return snippet[:SNIPPET_MAX_CHARS]
 
 
-def build_embedding_input(label: str, snippet: str, source_file: str, community_name: str | None) -> str:
+def build_embedding_input(
+    label: str, snippet: str, source_file: str, community_name: str | None
+) -> str:
     """C6: label + bounded source snippet + path + community name,
     concatenated into a single embedding input string."""
     parts = [
@@ -275,7 +278,10 @@ def default_embed_health_check(base_url: str, timeout: float) -> bool:
     "never crash the pipeline on a down local service" pattern, mirroring
     naming.default_ollama_health_check, but against the native surface)."""
     url = base_url.rstrip("/") + "/api/tags"
-    req = urllib.request.Request(url)
+    if not is_valid_http_base_url(url):
+        log.warning("embed health check refused non-http(s) URL %s", url)
+        return False
+    req = urllib.request.Request(url)  # noqa: S310 - scheme validated above
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - fixed internal endpoint
             status = getattr(resp, "status", resp.getcode())
@@ -285,7 +291,9 @@ def default_embed_health_check(base_url: str, timeout: float) -> bool:
         return False
 
 
-def embed_batch(base_url: str, model: str, inputs: list[str], timeout: float = EMBED_REQUEST_TIMEOUT) -> list[list[float]]:
+def embed_batch(
+    base_url: str, model: str, inputs: list[str], timeout: float = EMBED_REQUEST_TIMEOUT
+) -> list[list[float]]:
     """POST `{base_url}/api/embed` with `{"model": model, "input": inputs}`
     (native contract, verified via a real curl during WS3 build — NOT the
     `/v1/embeddings` OpenAI-compat shape, per C9). Returns one vector per
@@ -296,8 +304,12 @@ def embed_batch(base_url: str, model: str, inputs: list[str], timeout: float = E
     if not inputs:
         return []
     url = base_url.rstrip("/") + "/api/embed"
+    if not is_valid_http_base_url(url):
+        raise RuntimeError(f"embed_batch refused non-http(s) URL: {url!r}")
     payload = json.dumps({"model": model, "input": inputs}).encode("utf-8")
-    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+    req = urllib.request.Request(  # noqa: S310 - scheme validated above
+        url, data=payload, headers={"Content-Type": "application/json"}, method="POST"
+    )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - fixed internal endpoint
             body = json.loads(resp.read().decode("utf-8"))
@@ -361,7 +373,11 @@ def compute_repo_shard(
         input_text = build_embedding_input(label, snippet, source_file, community_name)
         digest = _content_hash(input_text)
         prev_entry = previous_shard.get(key)
-        if prev_entry is not None and prev_entry.get("content_hash") == digest and prev_entry.get("embedding"):
+        if (
+            prev_entry is not None
+            and prev_entry.get("content_hash") == digest
+            and prev_entry.get("embedding")
+        ):
             shard[key] = {"content_hash": digest, "embedding": prev_entry["embedding"]}
             stats.reused += 1
             continue
@@ -372,21 +388,31 @@ def compute_repo_shard(
 
     total_batches = -(-len(to_embed_keys) // EMBED_BATCH_SIZE) if to_embed_keys else 0
     if total_batches:
-        log.info("%s: embedding %d nodes in %d batches ...", repo_id, len(to_embed_keys), total_batches)
+        log.info(
+            "%s: embedding %d nodes in %d batches ...", repo_id, len(to_embed_keys), total_batches
+        )
     for batch_start in range(0, len(to_embed_keys), EMBED_BATCH_SIZE):
         batch_num = batch_start // EMBED_BATCH_SIZE + 1
         batch_keys = to_embed_keys[batch_start : batch_start + EMBED_BATCH_SIZE]
         batch_inputs = to_embed_inputs[batch_start : batch_start + EMBED_BATCH_SIZE]
         vectors = embed_batch(base_url, model, batch_inputs)
-        for key, vector in zip(batch_keys, vectors):
+        for key, vector in zip(batch_keys, vectors, strict=True):
             shard[key]["embedding"] = vector
             stats.embedded += 1
-        log.info("%s: batch %d/%d done (%d nodes embedded so far)", repo_id, batch_num, total_batches, stats.embedded)
+        log.info(
+            "%s: batch %d/%d done (%d nodes embedded so far)",
+            repo_id,
+            batch_num,
+            total_batches,
+            stats.embedded,
+        )
 
     return shard
 
 
-def build_id_map(previous_id_map: dict[str, dict], current_keys: set[str], generation_id: str) -> dict[str, dict]:
+def build_id_map(
+    previous_id_map: dict[str, dict], current_keys: set[str], generation_id: str
+) -> dict[str, dict]:
     """C27: rebuild the id-map to the EXACT current node-key set every
     generation. Keys present now are (re)marked "active"; keys that were
     "active" in the previous id-map but are absent now are marked
@@ -481,7 +507,11 @@ def run_embedding_stage(
         if not healthy:
             degrade_reason = "embed health check failed"
 
-    previous_current_dir = settings.embeddings_current_symlink if settings.embeddings_current_symlink.exists() else None
+    previous_current_dir = (
+        settings.embeddings_current_symlink
+        if settings.embeddings_current_symlink.exists()
+        else None
+    )
     previous_id_map = read_previous_id_map(previous_current_dir)
 
     if degrade_reason:
@@ -499,7 +529,9 @@ def run_embedding_stage(
         for repo_id in graphs_by_repo:
             prev_shard = read_previous_shard(previous_current_dir, repo_id)
             shards_by_repo[repo_id] = prev_shard
-            vectors_by_repo[repo_id] = {k: v["embedding"] for k, v in prev_shard.items() if v.get("embedding")}
+            vectors_by_repo[repo_id] = {
+                k: v["embedding"] for k, v in prev_shard.items() if v.get("embedding")
+            }
         return EmbeddingStageResult(
             status=EMBED_DEGRADED,
             vectors_by_repo=vectors_by_repo,
@@ -552,7 +584,8 @@ def run_embedding_stage(
                 # letting the exception propagate out of the pipeline.
                 log.warning(
                     "%s: embed_batch failed mid-run (%s) — falling back to previous shard for "
-                    "this repo and all %d remaining repo(s); already-embedded repos this run are kept",
+                    "this repo and all %d remaining repo(s); "
+                    "already-embedded repos this run are kept",
                     repo_id,
                     exc,
                     total_repos - i,
@@ -569,7 +602,9 @@ def run_embedding_stage(
 
         staged_shards[repo_id] = shard
         all_keys.update(shard.keys())
-        vectors_by_repo[repo_id] = {k: v["embedding"] for k, v in shard.items() if v.get("embedding")}
+        vectors_by_repo[repo_id] = {
+            k: v["embedding"] for k, v in shard.items() if v.get("embedding")
+        }
 
     id_map = build_id_map(previous_id_map, all_keys, provisional_generation_id)
     stats.tombstoned = sum(1 for v in id_map.values() if v.get("status") == "tombstoned")
@@ -597,7 +632,9 @@ def _infer_dim(vectors_by_repo: dict[str, dict[str, list[float]]]) -> int:
     return EMBED_DEFAULT_DIM
 
 
-def stage_embeddings(staging_root: Path, staged_shards_source: dict[str, dict], id_map: dict[str, dict]) -> Path:
+def stage_embeddings(
+    staging_root: Path, staged_shards_source: dict[str, dict], id_map: dict[str, dict]
+) -> Path:
     """Write this run's shards + id-map into the ephemeral per-run staging
     tempdir. Nothing here touches the real, persistent embeddings_dir — see
     `persist_generation`."""
@@ -605,12 +642,18 @@ def stage_embeddings(staging_root: Path, staged_shards_source: dict[str, dict], 
     out_dir.mkdir(parents=True, exist_ok=True)
     for repo_id, entries in staged_shards_source.items():
         shard_path = out_dir / _shard_filename(repo_id)
-        shard_path.write_text(json.dumps({"repo_id": repo_id, "entries": entries}), encoding="utf-8")
-    (out_dir / "id-map.json").write_text(json.dumps(id_map, indent=2, sort_keys=True), encoding="utf-8")
+        shard_path.write_text(
+            json.dumps({"repo_id": repo_id, "entries": entries}), encoding="utf-8"
+        )
+    (out_dir / "id-map.json").write_text(
+        json.dumps(id_map, indent=2, sort_keys=True), encoding="utf-8"
+    )
     return out_dir
 
 
-def persist_generation(embeddings_dir: Path, generation_id: str, staged_dir: Path, keep: int) -> None:
+def persist_generation(
+    embeddings_dir: Path, generation_id: str, staged_dir: Path, keep: int
+) -> None:
     """Called only after a successful publish (mirrors publish.flip_current):
     copies the staged shard files into
     `embeddings_dir/generations/<generation_id>/`, flips

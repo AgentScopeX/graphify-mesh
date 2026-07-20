@@ -13,7 +13,13 @@ def _read_json(path: Path) -> dict:
 
 def test_auto_add_bootstraps_fresh_project(env):
     # Registered (collection dir + symlink exist) but no graph.json yet.
-    env.add_repo("example-org.styleguide", "example-org", "styleguide", "styleguide.example-org.dev.lo", graph_fixture=None)
+    env.add_repo(
+        "example-org.styleguide",
+        "example-org",
+        "styleguide",
+        "styleguide.example-org.dev.lo",
+        graph_fixture=None,
+    )
     env.write_registry()
     settings = env.settings()
 
@@ -28,7 +34,13 @@ def test_auto_add_bootstraps_fresh_project(env):
 
 
 def test_failed_bootstrap_not_claimed_as_auto_added(env):
-    env.add_repo("example-org.styleguide", "example-org", "styleguide", "styleguide.example-org.dev.lo", graph_fixture=None)
+    env.add_repo(
+        "example-org.styleguide",
+        "example-org",
+        "styleguide",
+        "styleguide.example-org.dev.lo",
+        graph_fixture=None,
+    )
     env.write_registry()
     collection = env.collection_path("example-org", "styleguide")
     env.set_control(collection, "bootstrap_fail")
@@ -47,7 +59,13 @@ def test_failed_bootstrap_not_claimed_as_auto_added(env):
 
 
 def test_dirty_worktree_recorded_read_only(env):
-    root = env.add_repo("example-org.styleguide", "example-org", "styleguide", "styleguide.example-org.dev.lo", "repo_a.json")
+    root = env.add_repo(
+        "example-org.styleguide",
+        "example-org",
+        "styleguide",
+        "styleguide.example-org.dev.lo",
+        "repo_a.json",
+    )
     subprocess.run(["git", "init", "-q"], cwd=str(root), check=True)
     subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=str(root), check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=str(root), check=True)

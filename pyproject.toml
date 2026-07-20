@@ -35,8 +35,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-test = ["pytest>=7.0,<9"]
-lint = ["ruff>=0.5,<1.0", "mypy>=1.10,<2"]
+test = ["pytest>=9.0.3,<10"]
+lint = ["ruff>=0.5,<1.0", "mypy>=1.10,<2", "types-PyYAML", "types-jsonschema"]
 
 [project.urls]
 Homepage = "https://github.com/AgentScopeX/graphify-mesh"

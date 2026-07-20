@@ -15,17 +15,17 @@ carried explicitly (not hardcoded as a bare string) so a future
 `include_inferred` passthrough only needs to plumb the real value through,
 not invent the field.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from graphify_mesh.sync.embedding import build_snippet
-
 from graphify_mesh.server import ranking
 from graphify_mesh.server.retrieval import EmbedQueryFn, Hit, rank
 from graphify_mesh.server.scope import RegistryEntry
 from graphify_mesh.server.store import Generation
+from graphify_mesh.sync.embedding import build_snippet
 
 # Rough, dependency-free token estimate — no tokenizer dependency added just
 # for a budget heuristic. ~4 chars/token is the commonly-cited English-text
@@ -55,7 +55,10 @@ class EvidenceCard:
     def estimated_tokens(self) -> int:
         # citation + label are always present and cheap; snippet dominates
         # the estimate. +1 keeps a zero-length snippet from costing 0 tokens.
-        return max(1, (len(self.snippet) + len(self.label) + len(self.citation)) // CHARS_PER_TOKEN_ESTIMATE)
+        return max(
+            1,
+            (len(self.snippet) + len(self.label) + len(self.citation)) // CHARS_PER_TOKEN_ESTIMATE,
+        )
 
 
 @dataclass
@@ -73,7 +76,9 @@ def _root_for_repo(repo_id: str, registry_entries: list[RegistryEntry]) -> Path 
     return None
 
 
-def _card_from_hit(hit: Hit, generation: Generation, registry_entries: list[RegistryEntry]) -> EvidenceCard:
+def _card_from_hit(
+    hit: Hit, generation: Generation, registry_entries: list[RegistryEntry]
+) -> EvidenceCard:
     node = generation.node_by_id.get(hit.node_id, {})
     line = node.get("line")
     root = _root_for_repo(hit.repo, registry_entries)
@@ -115,4 +120,6 @@ def build_context_pack(
         selected.append(card)
         remaining -= cost
 
-    return ContextPackResult(goal=goal, cards=selected, truncated=truncated, degraded=ranked.degraded)
+    return ContextPackResult(
+        goal=goal, cards=selected, truncated=truncated, degraded=ranked.degraded
+    )

@@ -130,7 +130,9 @@ def test_embed_batch_request_shape_matches_verified_native_contract(monkeypatch)
 
     monkeypatch.setattr(embedding.urllib.request, "urlopen", fake_urlopen)
 
-    vectors = embedding.embed_batch("https://ollama.example.com:11434", "qwen3-embedding:0.6b", ["a", "b"])
+    vectors = embedding.embed_batch(
+        "https://ollama.example.com:11434", "qwen3-embedding:0.6b", ["a", "b"]
+    )
 
     # C9: native endpoint, NOT /v1/embeddings.
     assert captured["url"] == "https://ollama.example.com:11434/api/embed"
@@ -141,7 +143,9 @@ def test_embed_batch_request_shape_matches_verified_native_contract(monkeypatch)
 
 def test_embed_batch_raises_on_shape_mismatch(monkeypatch):
     def fake_urlopen(req, timeout=None):
-        return _FakeResponse({"model": "x", "embeddings": [[0.1, 0.2]]})  # only 1, but 2 inputs requested
+        return _FakeResponse(
+            {"model": "x", "embeddings": [[0.1, 0.2]]}
+        )  # only 1, but 2 inputs requested
 
     monkeypatch.setattr(embedding.urllib.request, "urlopen", fake_urlopen)
 
@@ -199,7 +203,12 @@ def test_id_map_reappearing_key_goes_back_to_active():
 def _graph_with_one_node(label="Widget", source_file="src/w.py", extra: str = "") -> dict:
     return {
         "nodes": [
-            {"id": "n1", "label": label, "source_file": source_file, "community_name": "Comm" + extra},
+            {
+                "id": "n1",
+                "label": label,
+                "source_file": source_file,
+                "community_name": "Comm" + extra,
+            },
         ]
     }
 
@@ -217,7 +226,13 @@ def test_compute_repo_shard_reuses_unchanged_node_without_calling_embed(tmp_path
     monkeypatch.setattr(embedding, "embed_batch", fake_embed_batch)
 
     first_shard = embedding.compute_repo_shard(
-        "repo.a", graph, tmp_path, previous_shard={}, base_url="https://host", model="m", stats=stats
+        "repo.a",
+        graph,
+        tmp_path,
+        previous_shard={},
+        base_url="https://host",
+        model="m",
+        stats=stats,
     )
     assert call_count["n"] == 1
     key = next(iter(first_shard))
@@ -226,7 +241,13 @@ def test_compute_repo_shard_reuses_unchanged_node_without_calling_embed(tmp_path
     # Second run, node completely unchanged -> content_hash matches, must be
     # reused without another embed_batch call.
     second_shard = embedding.compute_repo_shard(
-        "repo.a", graph, tmp_path, previous_shard=first_shard, base_url="https://host", model="m", stats=stats
+        "repo.a",
+        graph,
+        tmp_path,
+        previous_shard=first_shard,
+        base_url="https://host",
+        model="m",
+        stats=stats,
     )
     assert call_count["n"] == 1  # unchanged: no new call
     assert second_shard[key]["embedding"] == [1.0, 2.0]
@@ -245,14 +266,26 @@ def test_compute_repo_shard_recomputes_when_content_changes(tmp_path, monkeypatc
 
     first_graph = _graph_with_one_node(extra="A")
     first_shard = embedding.compute_repo_shard(
-        "repo.a", first_graph, tmp_path, previous_shard={}, base_url="https://host", model="m", stats=stats
+        "repo.a",
+        first_graph,
+        tmp_path,
+        previous_shard={},
+        base_url="https://host",
+        model="m",
+        stats=stats,
     )
     assert call_count["n"] == 1
 
     # community_name changed -> embedding input hash changes -> must recompute.
     second_graph = _graph_with_one_node(extra="B")
     second_shard = embedding.compute_repo_shard(
-        "repo.a", second_graph, tmp_path, previous_shard=first_shard, base_url="https://host", model="m", stats=stats
+        "repo.a",
+        second_graph,
+        tmp_path,
+        previous_shard=first_shard,
+        base_url="https://host",
+        model="m",
+        stats=stats,
     )
     assert call_count["n"] == 2
     key = next(iter(second_shard))
@@ -265,7 +298,13 @@ def test_compute_repo_shard_skips_trivial_node_without_calling_embed(tmp_path, m
     (src / "w.py").write_text("def getName(self):\n    return self.name\n", encoding="utf-8")
     graph = {
         "nodes": [
-            {"id": "n1", "label": "getName", "source_file": "src/w.py", "line": 1, "community_name": "Comm"},
+            {
+                "id": "n1",
+                "label": "getName",
+                "source_file": "src/w.py",
+                "line": 1,
+                "community_name": "Comm",
+            },
         ]
     }
     stats = embedding.EmbeddingStats()
@@ -276,7 +315,13 @@ def test_compute_repo_shard_skips_trivial_node_without_calling_embed(tmp_path, m
     monkeypatch.setattr(embedding, "embed_batch", fake_embed_batch)
 
     shard = embedding.compute_repo_shard(
-        "repo.a", graph, tmp_path, previous_shard={}, base_url="https://host", model="m", stats=stats
+        "repo.a",
+        graph,
+        tmp_path,
+        previous_shard={},
+        base_url="https://host",
+        model="m",
+        stats=stats,
     )
     key = next(iter(shard))
     assert shard[key]["embedding"] is None
@@ -290,7 +335,12 @@ def test_compute_repo_shard_skips_trivial_node_without_calling_embed(tmp_path, m
 
 def test_gc_old_generations_keeps_only_last_two(tmp_path):
     generations_dir = tmp_path / "generations"
-    for name in ["20260101T000000Z-a", "20260102T000000Z-b", "20260103T000000Z-c", "20260104T000000Z-d"]:
+    for name in [
+        "20260101T000000Z-a",
+        "20260102T000000Z-b",
+        "20260103T000000Z-c",
+        "20260104T000000Z-d",
+    ]:
         (generations_dir / name).mkdir(parents=True)
 
     removed = embedding.gc_old_generations(generations_dir, keep=2)
@@ -319,7 +369,14 @@ def test_run_embedding_stage_reuses_whole_shard_for_unchanged_repo(tmp_path, mon
     prev_gen_dir = settings.embeddings_dir / "generations" / "gen-0"
     prev_gen_dir.mkdir(parents=True)
     (prev_gen_dir / "repo.a.json").write_text(
-        json.dumps({"repo_id": "repo.a", "entries": {"repo.a\x1fsrc/w.py\x1fWidget": {"content_hash": "abc", "embedding": [9.0]}}}),
+        json.dumps(
+            {
+                "repo_id": "repo.a",
+                "entries": {
+                    "repo.a\x1fsrc/w.py\x1fWidget": {"content_hash": "abc", "embedding": [9.0]}
+                },
+            }
+        ),
         encoding="utf-8",
     )
     (prev_gen_dir / "id-map.json").write_text(json.dumps({}), encoding="utf-8")
@@ -352,7 +409,14 @@ def test_run_embedding_stage_degraded_carries_forward_previous_vectors(tmp_path)
     prev_gen_dir = settings.embeddings_dir / "generations" / "gen-0"
     prev_gen_dir.mkdir(parents=True)
     (prev_gen_dir / "repo.a.json").write_text(
-        json.dumps({"repo_id": "repo.a", "entries": {"repo.a\x1fsrc/w.py\x1fWidget": {"content_hash": "abc", "embedding": [7.0]}}}),
+        json.dumps(
+            {
+                "repo_id": "repo.a",
+                "entries": {
+                    "repo.a\x1fsrc/w.py\x1fWidget": {"content_hash": "abc", "embedding": [7.0]}
+                },
+            }
+        ),
         encoding="utf-8",
     )
     (prev_gen_dir / "id-map.json").write_text(json.dumps({}), encoding="utf-8")
@@ -384,7 +448,14 @@ def test_run_embedding_stage_mid_run_failure_is_partial_not_crash(tmp_path, monk
     prev_gen_dir = settings.embeddings_dir / "generations" / "gen-0"
     prev_gen_dir.mkdir(parents=True)
     (prev_gen_dir / "repo.c.json").write_text(
-        json.dumps({"repo_id": "repo.c", "entries": {"repo.c\x1fsrc/z.py\x1fZeta": {"content_hash": "prevc", "embedding": [3.0]}}}),
+        json.dumps(
+            {
+                "repo_id": "repo.c",
+                "entries": {
+                    "repo.c\x1fsrc/z.py\x1fZeta": {"content_hash": "prevc", "embedding": [3.0]}
+                },
+            }
+        ),
         encoding="utf-8",
     )
     (prev_gen_dir / "id-map.json").write_text(json.dumps({}), encoding="utf-8")
@@ -392,7 +463,9 @@ def test_run_embedding_stage_mid_run_failure_is_partial_not_crash(tmp_path, monk
 
     def flaky_embed_batch(base_url, model, inputs, timeout=30.0):
         if "network-blip-marker" in inputs[0]:
-            raise RuntimeError("embed_batch request failed: <urlopen error [Errno -2] Name or service not known>")
+            raise RuntimeError(
+                "embed_batch request failed: <urlopen error [Errno -2] Name or service not known>"
+            )
         return [[1.0] for _ in inputs]
 
     monkeypatch.setattr(embedding, "embed_batch", flaky_embed_batch)
@@ -443,7 +516,9 @@ def test_persist_generation_writes_current_and_gcs_old(tmp_path):
     embeddings_dir = tmp_path / "embeddings"
     staged_dir = tmp_path / "staged"
     staged_dir.mkdir()
-    (staged_dir / "repo.a.json").write_text(json.dumps({"repo_id": "repo.a", "entries": {}}), encoding="utf-8")
+    (staged_dir / "repo.a.json").write_text(
+        json.dumps({"repo_id": "repo.a", "entries": {}}), encoding="utf-8"
+    )
     (staged_dir / "id-map.json").write_text("{}", encoding="utf-8")
 
     embedding.persist_generation(embeddings_dir, "20260101T000000Z-aaa", staged_dir, keep=2)
@@ -473,7 +548,9 @@ def test_shard_filename_rejects_unsafe_repo_id(bad_id):
 def test_read_previous_shard_refuses_traversal_repo_id(tmp_path):
     current_dir = tmp_path / "current"
     current_dir.mkdir()
-    (tmp_path / "outside.json").write_text(json.dumps({"entries": {"leaked": {}}}), encoding="utf-8")
+    (tmp_path / "outside.json").write_text(
+        json.dumps({"entries": {"leaked": {}}}), encoding="utf-8"
+    )
     with pytest.raises(ValueError, match="unsafe repo_id"):
         embedding.read_previous_shard(current_dir, "../outside")
 

@@ -6,6 +6,7 @@ real MCP client would, and confirms:
     (not just via `handle_message` in-process, which the other tests use).
   * the process exits cleanly and promptly when stdin is closed (WS6).
 """
+
 from __future__ import annotations
 
 import json
@@ -19,11 +20,17 @@ SRC_DIR = Path(__file__).resolve().parents[2] / "src"
 def _write_registry(mesh_root: Path) -> None:
     registry_path = mesh_root / "bin" / "registry.json"
     registry_path.parent.mkdir(parents=True, exist_ok=True)
-    registry_path.write_text(json.dumps({"repos": [], "disabled": [], "external_roots": []}), encoding="utf-8")
+    registry_path.write_text(
+        json.dumps({"repos": [], "disabled": [], "external_roots": []}), encoding="utf-8"
+    )
 
 
 def _spawn(mesh_root: Path) -> subprocess.Popen:
-    env = {"GRAPHIFY_MESH_ROOT": str(mesh_root), "PATH": "/usr/bin:/bin", "PYTHONPATH": str(SRC_DIR)}
+    env = {
+        "GRAPHIFY_MESH_ROOT": str(mesh_root),
+        "PATH": "/usr/bin:/bin",
+        "PYTHONPATH": str(SRC_DIR),
+    }
     return subprocess.Popen(
         [sys.executable, "-m", "graphify_mesh.server.server"],
         stdin=subprocess.PIPE,

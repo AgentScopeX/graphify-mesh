@@ -4,10 +4,12 @@ All paths are configurable (CLI flags / GRAPHIFY_MESH_* env vars) so tests never
 touch a real filesystem tree. The path defaults below are placeholders for a
 typical single-host deployment; override them for your environment.
 """
+
 from __future__ import annotations
 
 import os
 import urllib.parse
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -53,10 +55,9 @@ def _health_timeout_from_env(var_name: str, default: float) -> float:
     if not value > 0:
         raise ValueError(f"{var_name} must be > 0 seconds, got {raw!r}")
     if value > HEALTH_TIMEOUT_MAX_SECONDS:
-        raise ValueError(
-            f"{var_name} must be <= {HEALTH_TIMEOUT_MAX_SECONDS} seconds, got {raw!r}"
-        )
+        raise ValueError(f"{var_name} must be <= {HEALTH_TIMEOUT_MAX_SECONDS} seconds, got {raw!r}")
     return value
+
 
 # C19: never re-litigate — see graphify_mesh.sync/__init__.py docstring for the
 # full evidence citation of why `merge-graphs` (stateless) is used instead of
@@ -132,20 +133,55 @@ FORBIDDEN_OVERLAY_RELATION_TYPES = frozenset(
 # dict-dispatch instead of if/elif chains per project code style.
 CODE_EXTENSIONS = frozenset(
     {
-        ".py", ".php", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".java",
-        ".rb", ".c", ".h", ".cpp", ".hpp", ".cs", ".kt", ".swift", ".vue",
+        ".py",
+        ".php",
+        ".ts",
+        ".tsx",
+        ".js",
+        ".jsx",
+        ".go",
+        ".rs",
+        ".java",
+        ".rb",
+        ".c",
+        ".h",
+        ".cpp",
+        ".hpp",
+        ".cs",
+        ".kt",
+        ".swift",
+        ".vue",
     }
 )
 SEMANTIC_EXTENSIONS = frozenset(
     {
-        ".md", ".mdx", ".rst", ".txt", ".yaml", ".yml", ".json", ".toml",
-        ".ini", ".cfg", ".conf", ".env.example",
+        ".md",
+        ".mdx",
+        ".rst",
+        ".txt",
+        ".yaml",
+        ".yml",
+        ".json",
+        ".toml",
+        ".ini",
+        ".cfg",
+        ".conf",
+        ".env.example",
     }
 )
 IGNORED_DIR_NAMES = frozenset(
     {
-        ".git", "node_modules", "vendor", "graphify-out", "__pycache__",
-        ".venv", "venv", "dist", "build", ".idea", ".vscode",
+        ".git",
+        "node_modules",
+        "vendor",
+        "graphify-out",
+        "__pycache__",
+        ".venv",
+        "venv",
+        "dist",
+        "build",
+        ".idea",
+        ".vscode",
     }
 )
 
@@ -179,10 +215,14 @@ class Settings:
     skip_embedding: bool = False
     allow_shrink: bool = False
     ollama_base_url: str = field(
-        default_factory=lambda: os.environ.get("GRAPHIFY_MESH_OLLAMA_BASE_URL", OLLAMA_DEFAULT_BASE_URL)
+        default_factory=lambda: os.environ.get(
+            "GRAPHIFY_MESH_OLLAMA_BASE_URL", OLLAMA_DEFAULT_BASE_URL
+        )
     )
     ollama_api_key: str = field(
-        default_factory=lambda: os.environ.get("GRAPHIFY_MESH_OLLAMA_API_KEY", OLLAMA_DEFAULT_API_KEY)
+        default_factory=lambda: os.environ.get(
+            "GRAPHIFY_MESH_OLLAMA_API_KEY", OLLAMA_DEFAULT_API_KEY
+        )
     )
     ollama_model: str = field(
         default_factory=lambda: os.environ.get("GRAPHIFY_MESH_OLLAMA_MODEL", OLLAMA_DEFAULT_MODEL)
@@ -196,15 +236,19 @@ class Settings:
     # callable that replaces the real network health check. Never set in
     # production; tests use this to force both the healthy and unhealthy
     # naming-stage paths deterministically without touching the network.
-    ollama_health_check: object = None
+    ollama_health_check: Callable[[str, str, float], bool] | None = None
 
     # WS3 embedding-stage settings (C9: SEPARATE base URL from the /v1 LLM
     # config above — the native /api/embed contract, not OpenAI-compat).
     ollama_embed_base_url: str = field(
-        default_factory=lambda: os.environ.get("GRAPHIFY_MESH_OLLAMA_EMBED_BASE_URL", EMBED_DEFAULT_BASE_URL)
+        default_factory=lambda: os.environ.get(
+            "GRAPHIFY_MESH_OLLAMA_EMBED_BASE_URL", EMBED_DEFAULT_BASE_URL
+        )
     )
     ollama_embed_model: str = field(
-        default_factory=lambda: os.environ.get("GRAPHIFY_MESH_OLLAMA_EMBED_MODEL", EMBED_DEFAULT_MODEL)
+        default_factory=lambda: os.environ.get(
+            "GRAPHIFY_MESH_OLLAMA_EMBED_MODEL", EMBED_DEFAULT_MODEL
+        )
     )
     ollama_embed_health_timeout: float = field(
         default_factory=lambda: _health_timeout_from_env(
@@ -213,7 +257,7 @@ class Settings:
     )
     # Test-only dependency injection, mirrors ollama_health_check above but
     # for the embedding stage's own (native-endpoint) health check.
-    ollama_embed_health_check: object = None
+    ollama_embed_health_check: Callable[[str, float], bool] | None = None
     keep_embedding_generations: int = KEEP_EMBEDDING_GENERATIONS
 
     @property
@@ -287,7 +331,7 @@ class Settings:
         scan_root: Path | None = None,
         registry_path: Path | None = None,
         **overrides,
-    ) -> "Settings":
+    ) -> Settings:
         # No machine-specific defaults: mesh_root/scan_root default to the
         # current working directory so the package is portable. Set them
         # explicitly (CLI flags or GRAPHIFY_MESH_ROOT / GRAPHIFY_MESH_SCAN_ROOT)
@@ -299,7 +343,10 @@ class Settings:
             scan_root or os.environ.get("GRAPHIFY_MESH_SCAN_ROOT") or Path.cwd()
         ).resolve()
         resolved_registry = Path(
-            registry_path or os.environ.get("GRAPHIFY_MESH_REGISTRY", str(resolved_mesh_root / "bin" / "registry.json"))
+            registry_path
+            or os.environ.get(
+                "GRAPHIFY_MESH_REGISTRY", str(resolved_mesh_root / "bin" / "registry.json")
+            )
         ).resolve()
         return cls(
             mesh_root=resolved_mesh_root,

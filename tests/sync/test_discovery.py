@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from graphify_mesh.sync.discovery import discover_filesystem, reconcile
 from graphify_mesh.sync.registry import load_registry
 
 
 def test_broken_symlink_reported_not_crashed(env):
-    root = env.add_repo("example-org.styleguide", "example-org", "styleguide", "styleguide.example-org.dev.lo")
+    root = env.add_repo(
+        "example-org.styleguide", "example-org", "styleguide", "styleguide.example-org.dev.lo"
+    )
     env.write_registry()
 
     # Break the symlink: point it at a target that no longer exists.
@@ -26,7 +26,9 @@ def test_broken_symlink_reported_not_crashed(env):
 
 
 def test_duplicate_collection_two_registry_entries_same_path(env):
-    root_a = env.add_repo("example-org.styleguide", "example-org", "styleguide", "styleguide.example-org.dev.lo")
+    env.add_repo(
+        "example-org.styleguide", "example-org", "styleguide", "styleguide.example-org.dev.lo"
+    )
     # Second registry entry pointing at the SAME collection_path via a
     # different discovered root (no separate collection dir created).
     env.add_repo(
@@ -58,7 +60,14 @@ def test_duplicate_collection_two_discovered_symlinks_same_target(env):
         r.mkdir(parents=True)
         (r / "graphify-out").symlink_to(collection, target_is_directory=True)
 
-    env._repos.append({"repo_id": "example-org.styleguide", "root": str(root1), "collection_path": str(collection), "enabled": True})
+    env._repos.append(
+        {
+            "repo_id": "example-org.styleguide",
+            "root": str(root1),
+            "collection_path": str(collection),
+            "enabled": True,
+        }
+    )
     env.write_registry()
 
     discovered = discover_filesystem(env.scan_root, env.scan_root)
@@ -71,7 +80,9 @@ def test_duplicate_collection_two_discovered_symlinks_same_target(env):
 
 
 def test_rename_project_detected_not_duplicated(env):
-    root = env.add_repo("example-org.styleguide", "example-org", "styleguide", "styleguide.example-org.dev.lo")
+    root = env.add_repo(
+        "example-org.styleguide", "example-org", "styleguide", "styleguide.example-org.dev.lo"
+    )
     env.write_registry()
 
     collection = env.collection_path("example-org", "styleguide")
@@ -112,7 +123,9 @@ def test_nested_depth2_discovery_nested_workspace_style(env):
 
 
 def test_remove_project_pruned_and_flagged(env):
-    env.add_repo("example-org.styleguide", "example-org", "styleguide", "styleguide.example-org.dev.lo")
+    env.add_repo(
+        "example-org.styleguide", "example-org", "styleguide", "styleguide.example-org.dev.lo"
+    )
     env.write_registry()
 
     # Project fully vanishes: root dir + symlink gone entirely.

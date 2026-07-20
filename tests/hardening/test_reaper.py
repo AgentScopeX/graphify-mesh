@@ -6,6 +6,7 @@ so no real signal is ever sent. This mirrors the project's existing
 test-injection convention for external calls (Settings.ollama_health_check
 etc.).
 """
+
 from __future__ import annotations
 
 import sys
@@ -15,7 +16,7 @@ _BIN_DIR = Path(__file__).resolve().parents[2] / "bin"
 if str(_BIN_DIR) not in sys.path:
     sys.path.insert(0, str(_BIN_DIR))
 
-from graphify_mesh.sync.reaper import (
+from graphify_mesh.sync.reaper import (  # noqa: E402 - import must follow the sys.path setup above
     ProcRow,
     find_orphan_candidates,
     parse_ps_output,
@@ -26,7 +27,7 @@ _LIVE_CLAUDE = "/home/user/.local/share/claude/versions/2.1.215 --session-id abc
 
 
 def test_parse_ps_output_skips_header_and_short_lines():
-    text = "  PID  PPID ARGS\n" "  123     1 python -m graphify.serve /x/global-graph.json\n" "garbage\n"
+    text = "  PID  PPID ARGS\n  123     1 python -m graphify.serve /x/global-graph.json\ngarbage\n"
     rows = parse_ps_output(text)
     assert len(rows) == 1
     assert rows[0].pid == 123
@@ -40,7 +41,13 @@ def test_parse_ps_output_without_header_line():
 
 
 def test_ppid_1_graphify_serve_is_flagged_orphan():
-    rows = [ProcRow(pid=100, ppid=1, args="/opt/pipx/venvs/graphifyy/bin/python -m graphify.serve /home/x/global-graph.json")]
+    rows = [
+        ProcRow(
+            pid=100,
+            ppid=1,
+            args="/opt/pipx/venvs/graphifyy/bin/python -m graphify.serve /home/x/global-graph.json",
+        )
+    ]
     candidates = find_orphan_candidates(rows)
     assert len(candidates) == 1
     assert candidates[0].pid == 100
@@ -57,7 +64,11 @@ def test_parent_pid_no_longer_exists_is_flagged_orphan():
 def test_parent_is_live_claude_session_is_never_flagged():
     rows = [
         ProcRow(pid=1188889, ppid=1188858, args=_LIVE_CLAUDE),
-        ProcRow(pid=1189714, ppid=1188889, args="/opt/pipx/venvs/graphifyy/bin/python -m graphify.serve /home/x/global-graph.json"),
+        ProcRow(
+            pid=1189714,
+            ppid=1188889,
+            args="/opt/pipx/venvs/graphifyy/bin/python -m graphify.serve /home/x/global-graph.json",
+        ),
     ]
     candidates = find_orphan_candidates(rows)
     assert candidates == []
@@ -123,7 +134,16 @@ def test_parent_exists_but_is_not_shell_or_claude_is_flagged_orphan():
 
 
 def test_graphify_extract_process_is_watched_too():
-    rows = [ProcRow(pid=300, ppid=1, args="/opt/pipx/venvs/graphifyy/bin/python -m graphify extract /workspace/some-repo --backend ollama")]
+    rows = [
+        ProcRow(
+            pid=300,
+            ppid=1,
+            args=(
+                "/opt/pipx/venvs/graphifyy/bin/python -m graphify extract "
+                "/workspace/some-repo --backend ollama"
+            ),
+        )
+    ]
     candidates = find_orphan_candidates(rows)
     assert len(candidates) == 1
     assert candidates[0].pid == 300

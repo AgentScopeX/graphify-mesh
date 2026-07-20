@@ -5,8 +5,17 @@ from pathlib import Path
 
 import pytest
 
-from graphify_mesh.sync import embedding, overlay, overlay_api, overlay_depends, overlay_similar, validate
-from graphify_mesh.sync.overlay_refs import DanglingReferenceError, LogicalRef, OverlayEdge, resolve_ref
+from graphify_mesh.sync import (
+    embedding,
+    overlay_api,
+    overlay_depends,
+    overlay_similar,
+    validate,
+)
+from graphify_mesh.sync.overlay_refs import (
+    DanglingReferenceError,
+    LogicalRef,
+)
 from graphify_mesh.sync.pipeline import run
 
 SCHEMA_PATH = Path(__file__).resolve().parents[2] / "examples" / "manual-relations.schema.json"
@@ -58,7 +67,10 @@ def test_depends_on_npm_runtime_and_dev_distinguished(tmp_path):
     _write_json(provider_root / "package.json", {"name": "@acme/styleguide"})
     _write_json(
         consumer_root / "package.json",
-        {"dependencies": {"@acme/styleguide": "^1.0"}, "devDependencies": {"@acme/dev-tool": "^1.0"}},
+        {
+            "dependencies": {"@acme/styleguide": "^1.0"},
+            "devDependencies": {"@acme/dev-tool": "^1.0"},
+        },
     )
     _write_json(
         consumer_root / "package-lock.json",
@@ -78,7 +90,10 @@ def test_depends_on_npm_runtime_and_dev_distinguished(tmp_path):
 def test_depends_on_no_edge_for_third_party_or_self(tmp_path):
     root = tmp_path / "solo"
     root.mkdir()
-    _write_json(root / "composer.json", {"name": "acme/solo", "require": {"symfony/framework-bundle": "^6.0"}})
+    _write_json(
+        root / "composer.json",
+        {"name": "acme/solo", "require": {"symfony/framework-bundle": "^6.0"}},
+    )
     _write_json(root / "composer.lock", {"packages": [{"name": "symfony/framework-bundle"}]})
 
     identity_map = overlay_depends.build_package_identity_map({"acme.solo": root})
@@ -101,8 +116,16 @@ def test_manual_relation_resolves_when_refs_exist():
     raw = [
         {
             "type": "depends_on",
-            "source": {"repo": "repo.a", "source_file": "src/alpha.py", "qualified_label": "AlphaThing"},
-            "target": {"repo": "repo.b", "source_file": "src/beta.py", "qualified_label": "BetaThing"},
+            "source": {
+                "repo": "repo.a",
+                "source_file": "src/alpha.py",
+                "qualified_label": "AlphaThing",
+            },
+            "target": {
+                "repo": "repo.b",
+                "source_file": "src/beta.py",
+                "qualified_label": "BetaThing",
+            },
             "confidence": 0.9,
             "evidence": "declared by a human",
         }
@@ -117,8 +140,16 @@ def test_manual_relation_dangling_ref_is_hard_error():
     raw = [
         {
             "type": "depends_on",
-            "source": {"repo": "repo.a", "source_file": "src/alpha.py", "qualified_label": "AlphaThing"},
-            "target": {"repo": "repo.ghost", "source_file": "src/nope.py", "qualified_label": "Nothing"},
+            "source": {
+                "repo": "repo.a",
+                "source_file": "src/alpha.py",
+                "qualified_label": "AlphaThing",
+            },
+            "target": {
+                "repo": "repo.ghost",
+                "source_file": "src/nope.py",
+                "qualified_label": "Nothing",
+            },
             "evidence": "bogus",
         }
     ]
@@ -149,12 +180,22 @@ def test_similar_approach_placeholder_contract_shape():
     graphs_by_repo = {
         "repo.a": {
             "nodes": [
-                {"id": "a1", "label": "OrderService", "source_file": "src/a.py", "community_name": "Orders"},
+                {
+                    "id": "a1",
+                    "label": "OrderService",
+                    "source_file": "src/a.py",
+                    "community_name": "Orders",
+                },
             ]
         },
         "repo.b": {
             "nodes": [
-                {"id": "b1", "label": "OrderService", "source_file": "src/b.py", "community_name": "Orders"},
+                {
+                    "id": "b1",
+                    "label": "OrderService",
+                    "source_file": "src/b.py",
+                    "community_name": "Orders",
+                },
             ]
         },
     }
@@ -187,9 +228,21 @@ def test_similar_approach_respects_top_k_cap():
     # One node in repo.a matches label+community in 3 different repos; cap
     # top_k=1 must limit that node to a single emitted edge.
     graphs_by_repo = {
-        "repo.a": {"nodes": [{"id": "a1", "label": "Thing", "source_file": "src/a.py", "community_name": "X"}]},
-        "repo.b": {"nodes": [{"id": "b1", "label": "Thing", "source_file": "src/b.py", "community_name": "X"}]},
-        "repo.c": {"nodes": [{"id": "c1", "label": "Thing", "source_file": "src/c.py", "community_name": "X"}]},
+        "repo.a": {
+            "nodes": [
+                {"id": "a1", "label": "Thing", "source_file": "src/a.py", "community_name": "X"}
+            ]
+        },
+        "repo.b": {
+            "nodes": [
+                {"id": "b1", "label": "Thing", "source_file": "src/b.py", "community_name": "X"}
+            ]
+        },
+        "repo.c": {
+            "nodes": [
+                {"id": "c1", "label": "Thing", "source_file": "src/c.py", "community_name": "X"}
+            ]
+        },
     }
     edges = overlay_similar.compute_similar_approach_edges(graphs_by_repo, top_k=1)
     involving_a = [e for e in edges if e.source.repo == "repo.a" or e.target.repo == "repo.a"]
@@ -237,11 +290,14 @@ def test_provides_api_route_extraction(tmp_path):
 def test_consumes_api_matches_provider(tmp_path):
     provider_root = tmp_path / "provider"
     consumer_root = tmp_path / "consumer"
-    _write_controller(provider_root / "src" / "Controller" / "WidgetController.php", "/api/v1/widgets/{id}")
+    _write_controller(
+        provider_root / "src" / "Controller" / "WidgetController.php", "/api/v1/widgets/{id}"
+    )
 
     (consumer_root / "src").mkdir(parents=True)
     (consumer_root / "src" / "Client.php").write_text(
-        "<?php\nclass Client {\n  function go($http) {\n    $http->request('GET', '/api/v1/widgets/{param}');\n  }\n}\n",
+        "<?php\nclass Client {\n  function go($http) {\n"
+        "    $http->request('GET', '/api/v1/widgets/{param}');\n  }\n}\n",
         encoding="utf-8",
     )
 
@@ -251,7 +307,9 @@ def test_consumes_api_matches_provider(tmp_path):
     consumer_candidates_by_repo = {
         "acme.consumer": overlay_api.extract_consumer_literal_paths("acme.consumer", consumer_root)
     }
-    edges = overlay_api.match_provides_consumes_edges(providers_by_repo, consumer_candidates_by_repo)
+    edges = overlay_api.match_provides_consumes_edges(
+        providers_by_repo, consumer_candidates_by_repo
+    )
 
     types = {e.type for e in edges}
     assert types == {"provides_api", "consumes_api"}
@@ -264,11 +322,14 @@ def test_consumes_api_matches_provider(tmp_path):
 def test_consumes_api_unresolvable_produces_zero_edges(tmp_path):
     provider_root = tmp_path / "provider"
     consumer_root = tmp_path / "consumer"
-    _write_controller(provider_root / "src" / "Controller" / "WidgetController.php", "/api/v1/widgets/{id}")
+    _write_controller(
+        provider_root / "src" / "Controller" / "WidgetController.php", "/api/v1/widgets/{id}"
+    )
 
     (consumer_root / "src").mkdir(parents=True)
     (consumer_root / "src" / "Client.php").write_text(
-        "<?php\nclass Client {\n  function go($http) {\n    $http->request('GET', '/api/v1/does-not-exist');\n  }\n}\n",
+        "<?php\nclass Client {\n  function go($http) {\n"
+        "    $http->request('GET', '/api/v1/does-not-exist');\n  }\n}\n",
         encoding="utf-8",
     )
 
@@ -278,7 +339,9 @@ def test_consumes_api_unresolvable_produces_zero_edges(tmp_path):
     consumer_candidates_by_repo = {
         "acme.consumer": overlay_api.extract_consumer_literal_paths("acme.consumer", consumer_root)
     }
-    edges = overlay_api.match_provides_consumes_edges(providers_by_repo, consumer_candidates_by_repo)
+    edges = overlay_api.match_provides_consumes_edges(
+        providers_by_repo, consumer_candidates_by_repo
+    )
     assert edges == []  # unresolvable consumer -> zero edges, never a guess
 
 
@@ -292,7 +355,9 @@ def test_forbidden_edge_invariant_catches_each_overlay_relation_type():
             "links": [{"source": "a", "target": "b", "relation": relation_type}],
         }
         result = validate.validate_forbidden_edges(data)
-        assert not result.ok, f"forbidden-edge invariant did not catch relation type {relation_type!r}"
+        assert not result.ok, (
+            f"forbidden-edge invariant did not catch relation type {relation_type!r}"
+        )
 
 
 # --- end-to-end: overlay wired into the pipeline, never leaks into graph.json
@@ -342,12 +407,22 @@ def test_similar_approach_uses_embedding_ann_when_vectors_available():
     graphs_by_repo = {
         "repo.a": {
             "nodes": [
-                {"id": "a1", "label": "OrderService", "source_file": "src/a.py", "community_name": "Orders"},
+                {
+                    "id": "a1",
+                    "label": "OrderService",
+                    "source_file": "src/a.py",
+                    "community_name": "Orders",
+                },
             ]
         },
         "repo.b": {
             "nodes": [
-                {"id": "b1", "label": "OrderHandler", "source_file": "src/b.py", "community_name": "Fulfillment"},
+                {
+                    "id": "b1",
+                    "label": "OrderHandler",
+                    "source_file": "src/b.py",
+                    "community_name": "Fulfillment",
+                },
             ]
         },
     }
@@ -360,7 +435,10 @@ def test_similar_approach_uses_embedding_ann_when_vectors_available():
     }
 
     edges = overlay_similar.compute_similar_approach_edges(
-        graphs_by_repo, embedding_vectors_by_repo=embedding_vectors_by_repo, top_k=5, embedding_model="qwen3-embedding:0.6b"
+        graphs_by_repo,
+        embedding_vectors_by_repo=embedding_vectors_by_repo,
+        top_k=5,
+        embedding_model="qwen3-embedding:0.6b",
     )
 
     assert len(edges) == 1
@@ -399,10 +477,24 @@ def test_similar_approach_falls_back_for_nodes_without_a_vector():
     # (deliverable 7's documented find_similar fallback for skipped nodes).
     graphs_by_repo = {
         "repo.a": {
-            "nodes": [{"id": "a1", "label": "OrderService", "source_file": "src/a.py", "community_name": "Orders"}]
+            "nodes": [
+                {
+                    "id": "a1",
+                    "label": "OrderService",
+                    "source_file": "src/a.py",
+                    "community_name": "Orders",
+                }
+            ]
         },
         "repo.b": {
-            "nodes": [{"id": "b1", "label": "OrderService", "source_file": "src/b.py", "community_name": "Orders"}]
+            "nodes": [
+                {
+                    "id": "b1",
+                    "label": "OrderService",
+                    "source_file": "src/b.py",
+                    "community_name": "Orders",
+                }
+            ]
         },
     }
     # A third, unrelated repo DOES have a vector, so the embedding index is
@@ -443,7 +535,7 @@ def test_pipeline_embed_stage_degraded_by_default_and_manifest_has_real_fields(e
     # env.settings() defaults BOTH the naming and embed health checks to
     # unhealthy (see conftest.py) so this exercises the fully-degraded WS3
     # path end-to-end without touching the real network.
-    core_root = env.add_repo("acme.core", "acme", "core", "core.acme.dev.lo", "repo_a.json")
+    env.add_repo("acme.core", "acme", "core", "core.acme.dev.lo", "repo_a.json")
     env.add_repo("acme.app", "acme", "app", "app.acme.dev.lo", "repo_b.json")
     env.write_registry()
 
@@ -453,7 +545,9 @@ def test_pipeline_embed_stage_degraded_by_default_and_manifest_has_real_fields(e
     assert report.published, report.publish_blocked_reason
     assert report.embedding_status == embedding.EMBED_DEGRADED
 
-    manifest = json.loads((settings.global_dir / "current" / "generation-manifest.json").read_text(encoding="utf-8"))
+    manifest = json.loads(
+        (settings.global_dir / "current" / "generation-manifest.json").read_text(encoding="utf-8")
+    )
     assert manifest["embedding_status"] == embedding.EMBED_DEGRADED
     assert "embedding_recipe" in manifest
     assert "embedding_stats" in manifest
@@ -484,7 +578,9 @@ def test_pipeline_embed_stage_healthy_populates_manifest_and_shards(env, monkeyp
     assert report.embedding_status == embedding.EMBED_HEALTHY
     assert report.embedding_stats.get("embedded", 0) > 0
 
-    manifest = json.loads((settings.global_dir / "current" / "generation-manifest.json").read_text(encoding="utf-8"))
+    manifest = json.loads(
+        (settings.global_dir / "current" / "generation-manifest.json").read_text(encoding="utf-8")
+    )
     assert manifest["embedding_model"] == settings.ollama_embed_model
     assert manifest["embedding_recipe"]["model"] == settings.ollama_embed_model
     assert manifest["embedding_recipe"]["dim"] == 3

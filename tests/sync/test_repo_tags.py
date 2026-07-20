@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from graphify.build import distinct_repo_tags
+
 from graphify_mesh.sync import repo_tags
 
 
@@ -15,7 +16,10 @@ def test_real_distinct_repo_tags_collides_for_collection_layout():
         Path("/path/to/graph-mesh/graphify/example-org/frontend-b/graph.json"),
     ]
     tags = distinct_repo_tags(paths)
-    assert tags != ["example-org.backend-a", "example-org.frontend-b"]  # confirmed NOT the registry repo_id
+    assert tags != [
+        "example-org.backend-a",
+        "example-org.frontend-b",
+    ]  # confirmed NOT the registry repo_id
 
 
 def test_compute_tag_to_repo_id_maps_auto_tags_to_true_repo_ids():
@@ -41,7 +45,11 @@ def test_rewrite_repo_tags_fixes_node_ids_repo_attr_and_edges():
             {"id": "external_node_no_prefix", "label": "Ext"},
         ],
         "links": [
-            {"source": "graphify_example-org::n1", "target": "graphify_example-org-2::n2", "relation": "calls"},
+            {
+                "source": "graphify_example-org::n1",
+                "target": "graphify_example-org-2::n2",
+                "relation": "calls",
+            },
         ],
     }
     result = repo_tags.rewrite_repo_tags(graph_data, tag_to_repo_id)
