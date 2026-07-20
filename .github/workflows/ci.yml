@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  security:
+  gitleaks:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -27,6 +27,15 @@ jobs:
             | tar -xz gitleaks
           ./gitleaks detect --source . --no-banner --redact
 
+  trufflehog:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: trufflehog — scan git history for verified secrets
         uses: trufflesecurity/trufflehog@v3.95.9
         with:
@@ -34,6 +43,13 @@ jobs:
           base: ""
           head: ${{ github.ref_name }}
           extra_args: --results=verified,unknown
+
+  pip-audit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -55,12 +71,13 @@ jobs:
           pip-audit
 
   test:
-    needs: security
+    needs: [gitleaks, trufflehog, pip-audit]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12"]
+        module: [sync, server, hardening]
 
     steps:
       - uses: actions/checkout@v4
@@ -75,8 +92,22 @@ jobs:
         # dependency, so this pulls it from PyPI automatically.
         run: pip install -e ".[test]"
 
-      - name: Run the test suite
-        run: python -m pytest tests/ -q
+      - name: Run the ${{ matrix.module }} test suite
+        run: python -m pytest tests/${{ matrix.module }} -q
+
+  smoke-test:
+    needs: [gitleaks, trufflehog, pip-audit]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install graphify-mesh with test extras
+        run: pip install -e ".[test]"
 
       - name: Smoke-test the console scripts
         run: |
