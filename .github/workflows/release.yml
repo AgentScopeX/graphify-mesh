@@ -20,7 +20,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install the upstream graphify CLI (required by the test suite)
-        run: pip install "graphifyy @ git+https://github.com/safishamsi/graphifyy"
+        run: pip install "graphifyy @ git+https://github.com/Graphify-Labs/graphify"
 
       - name: Install graphify-mesh with test extras
         run: pip install -e ".[test]"
