@@ -1,0 +1,12 @@
+{
+  "directed": false,
+  "multigraph": false,
+  "graph": {},
+  "nodes": [
+    {"id": "c1", "label": "GammaThing", "source_file": "src/gamma.py", "community": 0, "community_name": "Gamma Domain"},
+    {"id": "c2", "label": "gamma_other", "source_file": "src/gamma.py", "community": 0, "community_name": "Gamma Domain"}
+  ],
+  "links": [
+    {"source": "c1", "target": "c2", "relation": "semantically_similar_to", "cross_repo": true}
+  ]
+}

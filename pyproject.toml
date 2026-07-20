@@ -1,0 +1,56 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "graphify-mesh"
+version = "0.1.0"
+description = "Scheduled sync engine + companion MCP server that merges many per-repo graphify knowledge graphs into one repo-attributed, human-named global graph with a cross-project dependency/similarity/API overlay."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+authors = [{ name = "AgentScopeX" }]
+keywords = ["graphify", "knowledge-graph", "mcp", "code-intelligence", "cross-project"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+]
+dependencies = [
+    # PyYAML: parsing composer.lock/package-lock style + overlay manifest inputs
+    #   (graphify_mesh.sync.overlay_depends).
+    "PyYAML>=6.0",
+    # jsonschema: validates the human-authored manual-relations.json against
+    #   manual-relations.schema.json (graphify_mesh.sync.overlay_depends).
+    "jsonschema>=4.0",
+    # graphifyy: the upstream graphify CLI/library (PyPI project name
+    #   "graphifyy", import name "graphify"; github.com/Graphify-Labs/graphify).
+    #   The sync pipeline shells out to the `graphify` binary (resolved via
+    #   GRAPHIFY_BIN) AND imports `graphify.build.distinct_repo_tags` directly
+    #   at merge time — this is a real importable dependency, not just a CLI
+    #   on PATH, so it must be declared here.
+    "graphifyy>=0.9.20",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7.0"]
+
+[project.urls]
+Homepage = "https://github.com/AgentScopeX/graphify-mesh"
+Repository = "https://github.com/AgentScopeX/graphify-mesh"
+
+[project.scripts]
+graphify-mesh-sync = "graphify_mesh.sync.cli:main"
+graphify-mesh-server = "graphify_mesh.server.server:main"
+graphify-mesh-reap = "graphify_mesh.sync.reaper_cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/graphify_mesh"]
+
+[tool.pytest.ini_options]
+# src-layout: make `graphify_mesh` importable when running the test suite
+# without an editable install (`python -m pytest tests/`).
+pythonpath = ["src"]
+testpaths = ["tests"]

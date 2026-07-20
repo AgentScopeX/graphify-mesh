@@ -1,0 +1,23 @@
+[Unit]
+Description=Timer for reap-graphify-serve.service
+# EXAMPLE unit. Runs as its OWN timer, decoupled from graphify-mesh-sync.timer,
+# rather than as an ExecStartPre= of the sync service. Reasoning:
+#   1. The leak this reaps (stale MCP stdio sessions) is caused by client
+#      lifecycle (ended editor/agent sessions), not by anything the sync
+#      pipeline does — coupling them in one unit conflates two unrelated
+#      failure domains in one oneshot's logs/monitoring.
+#   2. Orphaned graphify.serve processes accumulate between sync runs; a
+#      tighter, independent cadence catches them sooner without changing the
+#      sync pipeline's schedule.
+#   3. Standalone means a bug in the reaper can never block or delay a sync
+#      publish run — the two units fail independently.
+
+[Timer]
+OnBootSec=3min
+OnUnitInactiveSec=10min
+AccuracySec=1min
+RandomizedDelaySec=30
+Unit=reap-graphify-serve.service
+
+[Install]
+WantedBy=timers.target

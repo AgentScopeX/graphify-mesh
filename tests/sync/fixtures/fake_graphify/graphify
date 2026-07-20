@@ -1,0 +1,350 @@
+#!/usr/bin/env python3
+"""Fake graphify CLI stub for graphify-mesh-sync tests.
+
+NEVER invokes the real graphify CLI, any LLM backend, or the network. It
+simulates just enough of `update`, `extract`, `merge-graphs`, `cluster-only`,
+and `label` for deterministic fixture-based testing of bin/graphify_mesh.sync.
+
+Behavior for `update`/`extract` is driven by a JSON control file pointed to
+by the FAKE_GRAPHIFY_CONTROL env var, keyed by the resolved real path of the
+project's `graphify-out` target directory (i.e. the collection_path). Each
+entry looks like:
+
+    {
+      "<collection_path>": {"mode": "normal|noop|shrink|fail|bootstrap_fail"}
+    }
+
+merge-graphs performs a real (but tiny, deterministic) union-of-node_link_data
+merge, tagging node ids with a `<product>.<sub>::` prefix derived from each
+input path's parent/grandparent directory names (mirrors distinct repo tags
+used by the real CLI's merge-graphs, cli.py:1899-1904).
+
+cluster-only/label simulate just enough of the real sig-gated label-reuse
+behavior (graphify/cluster.py's community_member_sigs +
+label_communities_by_hub, graphify/cli.py:1499-1624) for WS2 naming-stage
+tests: nodes are grouped into deterministic "communities" by their
+`repo_tag` attribute (set by this stub's own merge-graphs, above), each
+community gets a membership-fingerprint sig, and .graphify_labels.json /
+.graphify_labels.json.sig are read/written the same way the real CLI does —
+`cluster-only` reuses a saved label only if its sig still matches (falling
+back to a deterministic `hub:<tag>` name otherwise), `label --missing-only`
+assigns a `llm:<tag>` name only to cids missing a label or newly deleted by
+the caller. Every cluster-only/label invocation appends a JSON-lines entry
+(cmd, out_dir, missing_only, relabeled_cids, communities) to the path in
+FAKE_GRAPHIFY_CALL_LOG (if set) so tests can assert exactly which
+communities were sent to the "LLM".
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import sys
+from pathlib import Path
+
+
+def _control() -> dict:
+    path = os.environ.get("FAKE_GRAPHIFY_CONTROL")
+    if not path:
+        return {}
+    p = Path(path)
+    if not p.exists():
+        return {}
+    return json.loads(p.read_text(encoding="utf-8"))
+
+
+def _out_dir_for_root(root: Path) -> Path:
+    link = root / "graphify-out"
+    return link.resolve()
+
+
+def _read_graph(path: Path) -> dict:
+    if not path.exists():
+        return {"directed": False, "multigraph": False, "graph": {}, "nodes": [], "links": []}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _write_graph(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def cmd_update_or_extract(root_arg: str) -> int:
+    root = Path(root_arg).resolve()
+    out_dir = _out_dir_for_root(root)
+    graph_path = out_dir / "graph.json"
+    control = _control()
+    entry = control.get(str(out_dir), {})
+    mode = entry.get("mode", "normal")
+
+    if mode == "fail":
+        print("[fake-graphify] simulated failure", file=sys.stderr)
+        return 1
+
+    if mode == "bootstrap_fail":
+        print("[fake-graphify] simulated bootstrap failure, no graph written", file=sys.stderr)
+        return 1
+
+    data = _read_graph(graph_path)
+
+    if mode == "noop":
+        # Report success but write byte-identical content (real no-op case).
+        _write_graph(graph_path, data)
+        print("[fake-graphify] no changes")
+        return 0
+
+    if mode == "shrink":
+        # Simulate the shrink-guard false-success: CLI exits 0 but the file
+        # actually shrank (a node/edge silently dropped) without --force.
+        nodes = data.get("nodes", [])
+        if nodes:
+            nodes = nodes[:-1]
+        data["nodes"] = nodes
+        _write_graph(graph_path, data)
+        print("[fake-graphify] update complete (shrink-simulated)")
+        return 0
+
+    # normal: append one new node so content hash + size both grow.
+    nodes = data.get("nodes", [])
+    next_id = entry.get("new_node_id", f"n_new_{len(nodes)}")
+    nodes.append({"id": next_id, "label": next_id, "source_file": "sim/new.py"})
+    data["nodes"] = nodes
+    data.setdefault("links", [])
+    data.setdefault("directed", False)
+    data.setdefault("multigraph", False)
+    data.setdefault("graph", {})
+    _write_graph(graph_path, data)
+    print("[fake-graphify] update complete (1 node added)")
+    return 0
+
+
+def _repo_tag_for(graph_path: Path) -> str:
+    sub = graph_path.parent.name
+    product = graph_path.parent.parent.name
+    return f"{product}.{sub}"
+
+
+def cmd_merge_graphs(args: list[str]) -> int:
+    out_path: Path | None = None
+    graph_paths: list[Path] = []
+    i = 0
+    while i < len(args):
+        if args[i] == "--out" and i + 1 < len(args):
+            out_path = Path(args[i + 1])
+            i += 2
+            continue
+        graph_paths.append(Path(args[i]))
+        i += 1
+
+    if out_path is None or len(graph_paths) < 1:
+        print("Usage: graphify merge-graphs <g1> [g2 ...] --out <path>", file=sys.stderr)
+        return 1
+
+    merged_nodes: list[dict] = []
+    merged_links: list[dict] = []
+    for gp in graph_paths:
+        if not gp.exists():
+            print(f"error: not found: {gp}", file=sys.stderr)
+            return 1
+        data = json.loads(gp.read_text(encoding="utf-8"))
+        tag = _repo_tag_for(gp)
+        id_map = {}
+        for node in data.get("nodes", []):
+            old_id = node["id"]
+            new_id = f"{tag}::{old_id}"
+            id_map[old_id] = new_id
+            new_node = dict(node)
+            new_node["id"] = new_id
+            new_node["repo_tag"] = tag
+            merged_nodes.append(new_node)
+        for link in data.get("links", data.get("edges", [])):
+            new_link = dict(link)
+            new_link["source"] = id_map.get(link["source"], f"{tag}::{link['source']}")
+            new_link["target"] = id_map.get(link["target"], f"{tag}::{link['target']}")
+            merged_links.append(new_link)
+
+    out_data = {
+        "directed": False,
+        "multigraph": False,
+        "graph": {},
+        "nodes": merged_nodes,
+        "links": merged_links,
+    }
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(out_data, indent=2), encoding="utf-8")
+    print(f"Merged {len(graph_paths)} graphs -> {len(merged_nodes)} nodes, {len(merged_links)} edges")
+    print(f"Written to: {out_path}")
+    return 0
+
+
+def _call_log_append(entry: dict) -> None:
+    log_path = os.environ.get("FAKE_GRAPHIFY_CALL_LOG")
+    if not log_path:
+        return
+    p = Path(log_path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with p.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(entry) + "\n")
+
+
+def _community_key(node: dict) -> str:
+    """Deterministic community-grouping surrogate: group by the `repo_tag`
+    attribute this stub's own merge-graphs stamps onto every node, falling
+    back to the `::`-prefix of the node id."""
+    tag = node.get("repo_tag")
+    if tag:
+        return str(tag)
+    nid = str(node.get("id", ""))
+    return nid.split("::", 1)[0] if "::" in nid else "default"
+
+
+def _member_sig(members: list[str]) -> str:
+    h = hashlib.sha256()
+    for nid in sorted(str(n) for n in members):
+        h.update(nid.encode("utf-8", "replace"))
+        h.update(b"\x00")
+    return h.hexdigest()[:16]
+
+
+def cmd_cluster_or_label(cmd: str, args: list[str]) -> int:
+    missing_only = "--missing-only" in args
+    backend = None
+    model = None
+    positional: list[str] = []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--backend" and i + 1 < len(args):
+            backend = args[i + 1]
+            i += 2
+            continue
+        if a == "--model" and i + 1 < len(args):
+            model = args[i + 1]
+            i += 2
+            continue
+        if a in ("--no-viz", "--missing-only", "--no-label"):
+            i += 1
+            continue
+        if not a.startswith("--"):
+            positional.append(a)
+        i += 1
+
+    if not positional:
+        print("error: missing path", file=sys.stderr)
+        return 2
+    root = Path(positional[0]).resolve()
+    out_dir = root / "graphify-out"
+    graph_path = out_dir / "graph.json"
+
+    control = _control()
+    entry = control.get(str(out_dir), {})
+    mode = entry.get("mode", "normal")
+    if mode == "fail":
+        print(f"[fake-graphify] simulated {cmd} failure", file=sys.stderr)
+        return 1
+
+    if not graph_path.exists():
+        print(f"error: no graph found at {graph_path}", file=sys.stderr)
+        return 1
+
+    data = _read_graph(graph_path)
+    nodes = data.get("nodes", [])
+
+    groups: dict[str, list[str]] = {}
+    for node in nodes:
+        groups.setdefault(_community_key(node), []).append(node["id"])
+    sorted_keys = sorted(groups.keys())
+    cid_by_key = {key: idx for idx, key in enumerate(sorted_keys)}
+    communities = {cid_by_key[key]: members for key, members in groups.items()}
+    cur_sigs = {cid: _member_sig(members) for cid, members in communities.items()}
+
+    labels_path = out_dir / ".graphify_labels.json"
+    sig_path = out_dir / ".graphify_labels.json.sig"
+
+    existing_labels: dict[int, str] = {}
+    if labels_path.exists():
+        try:
+            existing_labels = {int(k): v for k, v in json.loads(labels_path.read_text(encoding="utf-8")).items()}
+        except (OSError, ValueError, json.JSONDecodeError):
+            existing_labels = {}
+
+    saved_sigs: dict[int, str] = {}
+    if sig_path.exists():
+        try:
+            saved_sigs = {int(k): v for k, v in json.loads(sig_path.read_text(encoding="utf-8")).items()}
+        except (OSError, ValueError, json.JSONDecodeError):
+            saved_sigs = {}
+
+    def hub_label(cid: int) -> str:
+        return f"hub:{sorted_keys[cid]}"
+
+    relabeled_cids: list[int] = []
+    force_relabel = cmd == "label"
+
+    if force_relabel:
+        labels = dict(existing_labels)
+        for cid in communities:
+            if cid not in labels:
+                labels[cid] = hub_label(cid)
+        targets = list(communities)
+        if missing_only:
+            targets = [
+                cid
+                for cid in communities
+                if cid not in existing_labels or existing_labels.get(cid) == f"Community {cid}"
+            ]
+        for cid in targets:
+            labels[cid] = f"llm:{sorted_keys[cid]}"
+            relabeled_cids.append(cid)
+    else:
+        labels = {}
+        for cid in communities:
+            fresh = cid in existing_labels and saved_sigs.get(cid) == cur_sigs.get(cid)
+            labels[cid] = existing_labels[cid] if fresh else hub_label(cid)
+
+    for node in nodes:
+        cid = cid_by_key[_community_key(node)]
+        node["community"] = cid
+        node["community_name"] = labels[cid]
+    data["nodes"] = nodes
+    _write_graph(graph_path, data)
+
+    labels_path.write_text(json.dumps({str(k): v for k, v in labels.items()}), encoding="utf-8")
+    sig_path.write_text(json.dumps({str(k): v for k, v in cur_sigs.items()}), encoding="utf-8")
+
+    _call_log_append(
+        {
+            "cmd": cmd,
+            "out_dir": str(out_dir),
+            "missing_only": missing_only,
+            "backend": backend,
+            "model": model,
+            "relabeled_cids": sorted(relabeled_cids),
+            "communities": sorted(communities.keys()),
+        }
+    )
+    print(f"[fake-graphify] {cmd} complete: {len(communities)} communities, relabeled={sorted(relabeled_cids)}")
+    return 0
+
+
+def main() -> int:
+    argv = sys.argv[1:]
+    if not argv:
+        print("Usage: graphify <update|extract|merge-graphs|cluster-only|label> ...", file=sys.stderr)
+        return 2
+    cmd, rest = argv[0], argv[1:]
+    if cmd in ("update", "extract"):
+        if not rest:
+            print("error: missing root path", file=sys.stderr)
+            return 2
+        return cmd_update_or_extract(rest[0])
+    if cmd == "merge-graphs":
+        return cmd_merge_graphs(rest)
+    if cmd in ("cluster-only", "label"):
+        return cmd_cluster_or_label(cmd, rest)
+    print(f"error: unsupported fake command: {cmd}", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

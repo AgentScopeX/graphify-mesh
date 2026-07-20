@@ -1,0 +1,14 @@
+[Unit]
+Description=Reap orphaned graphify.serve / graphify extract processes
+# EXAMPLE unit. Edit the /path/to/... placeholders before installing.
+
+[Service]
+Type=oneshot
+WorkingDirectory=/path/to/your/workspace
+# Edit: path to the graphify-mesh-reap console script inside your venv/pipx install.
+ExecStart=/path/to/your/venv/bin/graphify-mesh-reap --kill
+TimeoutStartSec=60
+MemoryMax=128M
+
+[Install]
+WantedBy=default.target

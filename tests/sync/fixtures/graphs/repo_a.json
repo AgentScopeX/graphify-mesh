@@ -1,0 +1,14 @@
+{
+  "directed": false,
+  "multigraph": false,
+  "graph": {},
+  "nodes": [
+    {"id": "a1", "label": "AlphaClass", "source_file": "src/alpha.py", "community": 0, "community_name": "Alpha Domain"},
+    {"id": "a2", "label": "alpha_helper", "source_file": "src/alpha.py", "community": 0, "community_name": "Alpha Domain"},
+    {"id": "ext1", "label": "requests", "community": 0, "community_name": "Alpha Domain"}
+  ],
+  "links": [
+    {"source": "a1", "target": "a2", "relation": "calls"},
+    {"source": "a1", "target": "ext1", "relation": "imports"}
+  ]
+}

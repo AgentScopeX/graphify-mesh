@@ -1,0 +1,123 @@
+"""WS5 scope contract: every tool takes `scope: current|all|repo:<id>`.
+
+Fail-closed by design (plan WS5 bullet 1 / requirement 2): an omitted or
+`"current"` scope resolves the client's cwd against `registry.json` to a
+single `repo_id`. If no registered repo's root is an ancestor of cwd, this
+raises `ScopeResolutionError` — it NEVER silently falls back to a global/
+unscoped search. The only ways to get cross-repo results are `scope="all"`,
+an explicit `scope="repo:<id>"`, or the dedicated `cross_project` tool.
+
+Scope filtering must be applied to the CANDIDATE SET before ranking, not as
+a post-filter of an already-ranked global top-K — see `retrieval.py`'s
+`gather_candidates`, which takes the resolved repo_id set and filters at
+candidate-generation time. Doing this only as a final filter step was an
+explicitly named failure mode in the plan (a large repo's global top-K can
+crowd out every current-project hit before the filter ever runs).
+"""
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from pathlib import Path
+
+
+class ScopeResolutionError(ValueError):
+    """Raised whenever scope cannot be resolved to a concrete, known repo_id
+    set. Callers must surface this as a hard tool error, never swallow it
+    into an unscoped/global fallback."""
+
+
+@dataclass(frozen=True)
+class RegistryEntry:
+    repo_id: str
+    root: Path
+    enabled: bool
+
+
+@dataclass(frozen=True)
+class ScopeDecision:
+    mode: str  # "repo" | "all"
+    repo_ids: frozenset[str] | None  # None means "all" (no repo filter)
+
+
+def load_registry_entries(registry_path: Path) -> list[RegistryEntry]:
+    if not registry_path.is_file():
+        return []
+    data = json.loads(registry_path.read_text(encoding="utf-8"))
+    disabled = set(data.get("disabled", []))
+    entries = []
+    for repo in data.get("repos", []):
+        if not isinstance(repo, dict) or "repo_id" not in repo or "root" not in repo:
+            continue
+        entries.append(
+            RegistryEntry(
+                repo_id=repo["repo_id"],
+                root=Path(repo["root"]).resolve(),
+                enabled=bool(repo.get("enabled", True)) and repo["repo_id"] not in disabled,
+            )
+        )
+    return entries
+
+
+def _match_cwd(cwd: Path, entries: list[RegistryEntry]) -> str | None:
+    """Longest-matching (most specific) registered repo root that is an
+    ancestor of (or equal to) `cwd`. Deterministic tie-break: if two roots
+    tie on path length (should not happen with well-formed registry data),
+    the alphabetically-first repo_id wins."""
+    resolved_cwd = cwd.resolve()
+    candidates = []
+    for entry in entries:
+        if not entry.enabled:
+            continue
+        try:
+            resolved_cwd.relative_to(entry.root)
+        except ValueError:
+            continue
+        candidates.append(entry)
+    if not candidates:
+        return None
+    candidates.sort(key=lambda e: (-len(str(e.root)), e.repo_id))
+    return candidates[0].repo_id
+
+
+def resolve_scope(scope: str | None, cwd: Path, entries: list[RegistryEntry]) -> ScopeDecision:
+    """Fail-closed scope resolution. `scope` is the raw tool argument:
+    None/""/"current" -> resolve cwd; "all" -> no filter; "repo:<id>" ->
+    explicit single repo, validated against the registry. Any other shape
+    raises."""
+    if scope in (None, "", "current"):
+        repo_id = _match_cwd(cwd, entries)
+        if repo_id is None:
+            raise ScopeResolutionError(
+                f"cannot resolve implicit scope: cwd {cwd} does not match any registered, "
+                "enabled repo root in registry.json — pass scope='all' or scope='repo:<id>' "
+                "explicitly (fail-closed: never silently falls back to a global search)"
+            )
+        return ScopeDecision(mode="repo", repo_ids=frozenset({repo_id}))
+
+    if scope == "all":
+        return ScopeDecision(mode="all", repo_ids=None)
+
+    if scope.startswith("repo:"):
+        repo_id = scope[len("repo:") :]
+        known = {e.repo_id for e in entries if e.enabled}
+        if repo_id not in known:
+            raise ScopeResolutionError(f"unknown or disabled repo_id {repo_id!r} in scope={scope!r}")
+        return ScopeDecision(mode="repo", repo_ids=frozenset({repo_id}))
+
+    raise ScopeResolutionError(f"invalid scope {scope!r}: expected 'current', 'all', or 'repo:<id>'")
+
+
+def resolve_repo_list(repos: list[str] | None, entries: list[RegistryEntry]) -> frozenset[str] | None:
+    """For `cross_project(repos=...)`: an explicit repo list is validated
+    against the registry (unknown repo_id is a hard error, per fail-closed
+    convention); `None`/empty means "all registered, enabled repos" — this
+    is safe here (unlike the implicit-scope case above) because calling
+    `cross_project` at all is itself the explicit cross-repo opt-in."""
+    if not repos:
+        return None
+    known = {e.repo_id for e in entries if e.enabled}
+    unknown = set(repos) - known
+    if unknown:
+        raise ScopeResolutionError(f"unknown or disabled repo_id(s) in cross_project repos=: {sorted(unknown)}")
+    return frozenset(repos)

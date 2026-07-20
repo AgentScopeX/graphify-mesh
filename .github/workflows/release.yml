@@ -1,0 +1,117 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the upstream graphify CLI (required by the test suite)
+        run: pip install "graphifyy @ git+https://github.com/safishamsi/graphifyy"
+
+      - name: Install graphify-mesh with test extras
+        run: pip install -e ".[test]"
+
+      - name: Run the full test suite (release aborts if this fails)
+        run: python -m pytest tests/ -q
+
+      - name: Build sdist + wheel
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+
+      - name: Create GitHub Release with artifacts
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.whl
+
+      # ---- PEP 503 "simple" index on the gh-pages branch ----------------
+      - name: Check out gh-pages (create orphan branch if missing)
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          path: pages
+        continue-on-error: true
+
+      - name: Regenerate the simple index
+        env:
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          python - <<'PY'
+          import html
+          import os
+          import re
+          from pathlib import Path
+
+          tag = os.environ["TAG"]
+          repo = os.environ["REPO"]            # e.g. AgentScopeX/graphify-mesh
+          base = f"https://github.com/{repo}/releases/download/{tag}"
+
+          pages = Path("pages")
+          proj_dir = pages / "simple" / "graphify-mesh"
+          proj_dir.mkdir(parents=True, exist_ok=True)
+          proj_index = proj_dir / "index.html"
+
+          # Collect existing links (previous releases) plus this release's files.
+          links: set[str] = set()
+          if proj_index.exists():
+              links.update(re.findall(r'href="([^"]+)"', proj_index.read_text(encoding="utf-8")))
+          for dist in sorted(Path("dist").glob("*")):
+              if dist.suffix in {".whl"} or dist.name.endswith(".tar.gz"):
+                  links.add(f"{base}/{dist.name}")
+
+          def filename(url: str) -> str:
+              return url.rsplit("/", 1)[-1]
+
+          rows = "\n".join(
+              f'    <a href="{html.escape(u)}">{html.escape(filename(u))}</a><br/>'
+              for u in sorted(links, key=filename)
+          )
+          proj_index.write_text(
+              "<!DOCTYPE html>\n<html><head>"
+              '<meta name="pypi:repository-version" content="1.0"/>'
+              "<title>graphify-mesh</title></head><body>\n"
+              f"{rows}\n</body></html>\n",
+              encoding="utf-8",
+          )
+
+          # Root index listing every project.
+          root_index = pages / "simple" / "index.html"
+          root_index.write_text(
+              "<!DOCTYPE html>\n<html><head><title>Simple index</title></head><body>\n"
+              '    <a href="graphify-mesh/">graphify-mesh</a><br/>\n'
+              "</body></html>\n",
+              encoding="utf-8",
+          )
+          print(f"Wrote {proj_index} with {len(links)} file link(s)")
+          PY
+
+      - name: Commit and push the updated index
+        working-directory: pages
+        run: |
+          git init -b gh-pages
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" 2>/dev/null || true
+          git add simple
+          git commit -m "publish ${TAG}: update PEP 503 simple index" || echo "nothing to commit"
+          git push --force origin gh-pages
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
