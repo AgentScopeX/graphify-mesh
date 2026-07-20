@@ -112,8 +112,10 @@ On success this publishes a new immutable generation and flips
 `<mesh_root>/graphify/global/current` to point at it.
 
 You can also drive everything from env vars instead of flags — see
-[`configuration.md`](configuration.md). To run on a schedule, adapt the units in
-`examples/systemd/` (edit every `/path/to/...` placeholder first).
+[`configuration.md`](configuration.md). To keep the graph fresh automatically,
+set up a scheduled sync — full step-by-step walkthrough (systemd timers, cron
+alternative, troubleshooting) in
+[`keeping-sync-up-to-date.md`](keeping-sync-up-to-date.md).
 
 ## 7. Register the MCP server
 
