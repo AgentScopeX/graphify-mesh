@@ -19,17 +19,16 @@ own package name). Both composer and npm identity resolution are implemented
 regardless, since which ecosystem a given repo-to-repo relationship shows up
 in is not guaranteed to stay fixed.
 """
+
 from __future__ import annotations
 
 import json
 import logging
-import re
 from pathlib import Path
 
 import yaml
 
 from graphify_mesh.sync.overlay_refs import (
-    DanglingReferenceError,
     LogicalRef,
     OverlayEdge,
     require_resolved,
@@ -82,7 +81,10 @@ def build_package_identity_map(repo_roots: dict[str, Path]) -> dict[str, str]:
                 continue
             if name in mapping and mapping[name] != repo_id:
                 log.warning(
-                    "package identity %r claimed by both %r and %r; keeping first", name, mapping[name], repo_id
+                    "package identity %r claimed by both %r and %r; keeping first",
+                    name,
+                    mapping[name],
+                    repo_id,
                 )
                 continue
             mapping[name] = repo_id
@@ -183,7 +185,8 @@ def extract_depends_on_edges(
                     continue
                 if dep_name not in locked_names:
                     log.info(
-                        "%s: composer dependency %r declared but not found in composer.lock; skipping (no guess)",
+                        "%s: composer dependency %r declared but not found in composer.lock; "
+                        "skipping (no guess)",
                         repo_id,
                         dep_name,
                     )
@@ -191,11 +194,18 @@ def extract_depends_on_edges(
                 edges.append(
                     OverlayEdge(
                         type="depends_on",
-                        source=LogicalRef(repo=repo_id, source_file="composer.json", qualified_label=dep_name),
-                        target=LogicalRef(repo=target_repo, source_file="composer.json", qualified_label=dep_name),
+                        source=LogicalRef(
+                            repo=repo_id, source_file="composer.json", qualified_label=dep_name
+                        ),
+                        target=LogicalRef(
+                            repo=target_repo, source_file="composer.json", qualified_label=dep_name
+                        ),
                         provenance=PROVENANCE_MANIFEST_LOCK,
                         confidence=confidence,
-                        evidence=f"composer.json[{section}] {dep_name}, confirmed in composer.lock ({kind})",
+                        evidence=(
+                            f"composer.json[{section}] {dep_name}, "
+                            f"confirmed in composer.lock ({kind})"
+                        ),
                     )
                 )
 
@@ -211,10 +221,13 @@ def extract_depends_on_edges(
                 target_repo = package_identity_map.get(dep_name)
                 if target_repo is None or target_repo == repo_id:
                     continue
-                locked = dep_name in npm_lock_names or (has_pnpm_lock and _pnpm_lock_has_name(root, dep_name))
+                locked = dep_name in npm_lock_names or (
+                    has_pnpm_lock and _pnpm_lock_has_name(root, dep_name)
+                )
                 if not locked:
                     log.info(
-                        "%s: npm dependency %r declared but not found in any lockfile; skipping (no guess)",
+                        "%s: npm dependency %r declared but not found in any lockfile; "
+                        "skipping (no guess)",
                         repo_id,
                         dep_name,
                     )
@@ -222,11 +235,17 @@ def extract_depends_on_edges(
                 edges.append(
                     OverlayEdge(
                         type="depends_on",
-                        source=LogicalRef(repo=repo_id, source_file="package.json", qualified_label=dep_name),
-                        target=LogicalRef(repo=target_repo, source_file="package.json", qualified_label=dep_name),
+                        source=LogicalRef(
+                            repo=repo_id, source_file="package.json", qualified_label=dep_name
+                        ),
+                        target=LogicalRef(
+                            repo=target_repo, source_file="package.json", qualified_label=dep_name
+                        ),
                         provenance=PROVENANCE_MANIFEST_LOCK,
                         confidence=confidence,
-                        evidence=f"package.json[{section}] {dep_name}, confirmed in lockfile ({kind})",
+                        evidence=(
+                            f"package.json[{section}] {dep_name}, confirmed in lockfile ({kind})"
+                        ),
                     )
                 )
 
@@ -246,7 +265,9 @@ def load_manual_relations(path: Path, schema: dict) -> list[dict]:
     return data.get("relations", [])
 
 
-def build_manual_relation_edges(raw_relations: list[dict], graphs_by_repo: dict[str, dict]) -> list[OverlayEdge]:
+def build_manual_relation_edges(
+    raw_relations: list[dict], graphs_by_repo: dict[str, dict]
+) -> list[OverlayEdge]:
     """Every manual relation's source/target logical ref must resolve
     against the current generation's per-repo graphs — a dangling ref is a
     hard error (raises DanglingReferenceError), not a warning, per plan WS4."""
@@ -254,8 +275,12 @@ def build_manual_relation_edges(raw_relations: list[dict], graphs_by_repo: dict[
     for relation in raw_relations:
         source_ref = LogicalRef.from_dict(relation["source"])
         target_ref = LogicalRef.from_dict(relation["target"])
-        require_resolved(source_ref, graphs_by_repo, context=f"manual relation source ({relation.get('type')})")
-        require_resolved(target_ref, graphs_by_repo, context=f"manual relation target ({relation.get('type')})")
+        require_resolved(
+            source_ref, graphs_by_repo, context=f"manual relation source ({relation.get('type')})"
+        )
+        require_resolved(
+            target_ref, graphs_by_repo, context=f"manual relation target ({relation.get('type')})"
+        )
         edges.append(
             OverlayEdge(
                 type=relation["type"],

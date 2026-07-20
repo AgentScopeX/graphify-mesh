@@ -9,7 +9,9 @@ from graphify_mesh.server.config import ServerConfig
 from graphify_mesh.server.store import GenerationStore, GenerationUnavailableError
 
 
-def _write_generation(global_dir: Path, generation_id: str, nodes: list[dict], links: list[dict] | None = None) -> None:
+def _write_generation(
+    global_dir: Path, generation_id: str, nodes: list[dict], links: list[dict] | None = None
+) -> None:
     """Writes a minimal, hash-consistent generation under
     `global_dir/generations/<id>/` and flips `current` to point at it —
     mirrors `graphify_mesh.sync.publish` closely enough for store.py's
@@ -53,7 +55,9 @@ def _write_generation(global_dir: Path, generation_id: str, nodes: list[dict], l
 
 
 def _config(tmp_path: Path) -> ServerConfig:
-    return ServerConfig.from_env(mesh_root=tmp_path, registry_path=tmp_path / "bin" / "registry.json")
+    return ServerConfig.from_env(
+        mesh_root=tmp_path, registry_path=tmp_path / "bin" / "registry.json"
+    )
 
 
 def test_no_generation_published_raises_generation_unavailable(tmp_path):
@@ -65,17 +69,27 @@ def test_no_generation_published_raises_generation_unavailable(tmp_path):
 
 def test_loads_valid_generation_and_builds_indexes(tmp_path):
     config = _config(tmp_path)
-    _write_generation(config.global_dir, "gen-1", [{"id": "n1", "repo": "repo.a", "label": "Alpha", "source_file": "a.py"}])
+    _write_generation(
+        config.global_dir,
+        "gen-1",
+        [{"id": "n1", "repo": "repo.a", "label": "Alpha", "source_file": "a.py"}],
+    )
     store = GenerationStore(config)
     generation = store.generation
     assert generation.generation_id == "gen-1"
     assert "n1" in generation.node_by_id
-    assert store.degraded == ["embeddings_unavailable"]  # no embeddings dir published in this fixture
+    assert store.degraded == [
+        "embeddings_unavailable"
+    ]  # no embeddings dir published in this fixture
 
 
 def test_inconsistent_manifest_rejected_all_or_nothing_keeps_previous(tmp_path):
     config = _config(tmp_path)
-    _write_generation(config.global_dir, "gen-1", [{"id": "n1", "repo": "repo.a", "label": "Alpha", "source_file": "a.py"}])
+    _write_generation(
+        config.global_dir,
+        "gen-1",
+        [{"id": "n1", "repo": "repo.a", "label": "Alpha", "source_file": "a.py"}],
+    )
     store = GenerationStore(config)
     first = store.generation
     assert first.generation_id == "gen-1"
@@ -84,7 +98,10 @@ def test_inconsistent_manifest_rejected_all_or_nothing_keeps_previous(tmp_path):
     # store.py must reject it and keep serving gen-1, not crash or half-load.
     gen2_dir = config.global_dir / "generations" / "gen-2"
     gen2_dir.mkdir(parents=True)
-    graph = {"nodes": [{"id": "n1", "repo": "repo.a", "label": "Alpha", "source_file": "a.py"}], "links": []}
+    graph = {
+        "nodes": [{"id": "n1", "repo": "repo.a", "label": "Alpha", "source_file": "a.py"}],
+        "links": [],
+    }
     (gen2_dir / "global-graph.json").write_text(json.dumps(graph), encoding="utf-8")
     (gen2_dir / "generation-manifest.json").write_text(
         json.dumps(
@@ -104,7 +121,9 @@ def test_inconsistent_manifest_rejected_all_or_nothing_keeps_previous(tmp_path):
         ),
         encoding="utf-8",
     )
-    (gen2_dir / "cross-project-overlay.json").write_text(json.dumps({"edges": []}), encoding="utf-8")
+    (gen2_dir / "cross-project-overlay.json").write_text(
+        json.dumps({"edges": []}), encoding="utf-8"
+    )
     (gen2_dir / "lexical-index.json").write_text(json.dumps({}), encoding="utf-8")
     current = config.global_dir / "current"
     current.unlink()
@@ -118,11 +137,19 @@ def test_inconsistent_manifest_rejected_all_or_nothing_keeps_previous(tmp_path):
 
 def test_hot_reload_picks_up_new_valid_generation(tmp_path):
     config = _config(tmp_path)
-    _write_generation(config.global_dir, "gen-1", [{"id": "n1", "repo": "repo.a", "label": "Alpha", "source_file": "a.py"}])
+    _write_generation(
+        config.global_dir,
+        "gen-1",
+        [{"id": "n1", "repo": "repo.a", "label": "Alpha", "source_file": "a.py"}],
+    )
     store = GenerationStore(config)
     assert store.generation.generation_id == "gen-1"
 
-    _write_generation(config.global_dir, "gen-2", [{"id": "n2", "repo": "repo.a", "label": "Beta", "source_file": "b.py"}])
+    _write_generation(
+        config.global_dir,
+        "gen-2",
+        [{"id": "n2", "repo": "repo.a", "label": "Beta", "source_file": "b.py"}],
+    )
     assert store.generation.generation_id == "gen-2"
     assert "n2" in store.generation.node_by_id
 

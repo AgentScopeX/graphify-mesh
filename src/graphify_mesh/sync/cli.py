@@ -10,6 +10,7 @@ Intended to be invoked by a scheduler (e.g. systemd Type=oneshot on a timer;
 see examples/systemd/graphify-mesh-sync.{service,timer}) — this is a single
 run (`--once` is the only supported mode; there is no daemon loop).
 """
+
 from __future__ import annotations
 
 import argparse
@@ -25,27 +26,66 @@ from graphify_mesh.sync.pipeline import run
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dry-run", action="store_true", help="Print every action; write nothing outside a private staging dir.")
-    parser.add_argument("--once", action="store_true", help="Single run (the only supported mode; no daemon loop).")
-    parser.add_argument("--mesh-root", type=Path, default=None, help="Override the graph-mesh repo root (testing).")
-    parser.add_argument("--scan-root", type=Path, default=None, help="Override the scan root (testing).")
-    parser.add_argument("--registry", type=Path, default=None, help="Override the registry.json path (testing).")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print every action; write nothing outside a private staging dir.",
+    )
+    parser.add_argument(
+        "--once", action="store_true", help="Single run (the only supported mode; no daemon loop)."
+    )
+    parser.add_argument(
+        "--mesh-root", type=Path, default=None, help="Override the graph-mesh repo root (testing)."
+    )
+    parser.add_argument(
+        "--scan-root", type=Path, default=None, help="Override the scan root (testing)."
+    )
+    parser.add_argument(
+        "--registry", type=Path, default=None, help="Override the registry.json path (testing)."
+    )
     # WS2 (naming) and WS3 (embedding) are both wired into the pipeline, so
     # both stages run by default now — a real run is expected to name
     # communities and embed nodes. --skip-* remain as explicit opt-outs for
     # fast local-only runs or when the Ollama host is unreachable.
-    parser.add_argument("--skip-labeling", action="store_true", default=False, help="Skip the naming stage and its non-placeholder community_name check. Default: off.")
-    parser.add_argument("--no-skip-labeling", dest="skip_labeling", action="store_false", help="(default) Enforce the naming stage and its community_name check.")
-    parser.add_argument("--skip-embedding", action="store_true", default=False, help="Skip the embedding stage. Default: off.")
-    parser.add_argument("--no-skip-embedding", dest="skip_embedding", action="store_false", help="(default) Run the embedding stage.")
-    parser.add_argument("--allow-shrink", action="store_true", help="Explicitly authorize a smaller published graph than the previous generation.")
+    parser.add_argument(
+        "--skip-labeling",
+        action="store_true",
+        default=False,
+        help="Skip the naming stage and its non-placeholder community_name check. Default: off.",
+    )
+    parser.add_argument(
+        "--no-skip-labeling",
+        dest="skip_labeling",
+        action="store_false",
+        help="(default) Enforce the naming stage and its community_name check.",
+    )
+    parser.add_argument(
+        "--skip-embedding",
+        action="store_true",
+        default=False,
+        help="Skip the embedding stage. Default: off.",
+    )
+    parser.add_argument(
+        "--no-skip-embedding",
+        dest="skip_embedding",
+        action="store_false",
+        help="(default) Run the embedding stage.",
+    )
+    parser.add_argument(
+        "--allow-shrink",
+        action="store_true",
+        help="Explicitly authorize a smaller published graph than the previous generation.",
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
-    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(levelname)s %(name)s: %(message)s",
+    )
 
     settings = Settings.from_env(
         mesh_root=args.mesh_root,
@@ -63,24 +103,26 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 3
 
-    print(json.dumps(
-        {
-            "dry_run": report.dry_run,
-            "reconciliation": report.reconciliation,
-            "project_actions": report.project_actions,
-            "stale_repos": report.stale_repos,
-            "dirty_repos": report.dirty_repos,
-            "merge_ok": report.merge_ok,
-            "merge_error": report.merge_error,
-            "validation_ok": report.validation_ok,
-            "validation_errors": report.validation_errors,
-            "published": report.published,
-            "publish_blocked_reason": report.publish_blocked_reason,
-            "generation_id": report.generation_id,
-            "skipped_stages": report.skipped_stages,
-        },
-        indent=2,
-    ))
+    print(
+        json.dumps(
+            {
+                "dry_run": report.dry_run,
+                "reconciliation": report.reconciliation,
+                "project_actions": report.project_actions,
+                "stale_repos": report.stale_repos,
+                "dirty_repos": report.dirty_repos,
+                "merge_ok": report.merge_ok,
+                "merge_error": report.merge_error,
+                "validation_ok": report.validation_ok,
+                "validation_errors": report.validation_errors,
+                "published": report.published,
+                "publish_blocked_reason": report.publish_blocked_reason,
+                "generation_id": report.generation_id,
+                "skipped_stages": report.skipped_stages,
+            },
+            indent=2,
+        )
+    )
     return 0
 
 

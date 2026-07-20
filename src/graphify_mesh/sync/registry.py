@@ -4,6 +4,7 @@ Registry is the source of truth for repo identity. A stray `.graphify_root`
 file on disk (some of which just contain "." junk, per plan M7) must never
 override it.
 """
+
 from __future__ import annotations
 
 import json
@@ -43,7 +44,8 @@ def _require_non_empty_str(entry: dict, index: int, key: str) -> str:
     if isinstance(value, str) and value:
         return value
     raise ValueError(
-        f"registry repos[{index}]: missing or invalid {key!r} (expected non-empty string, got {value!r})"
+        f"registry repos[{index}]: missing or invalid {key!r} "
+        f"(expected non-empty string, got {value!r})"
     )
 
 

@@ -9,13 +9,13 @@ WS6: for the manual rollback procedure (reverting to an OLDER generation
 than whatever `current` presently points at, past the automatic cases
 above), see `bin/graphify_mesh.sync/ROLLBACK.md`.
 """
+
 from __future__ import annotations
 
 import hashlib
 import json
 import os
 import time
-from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -48,7 +48,9 @@ def _write_json_atomic(path: Path, data: dict, **dumps_kwargs) -> None:
     os.rename(str(tmp_path), str(path))
 
 
-def write_generation(generations_dir: Path, generation_id: str, graph_data: dict, manifest: dict) -> Path:
+def write_generation(
+    generations_dir: Path, generation_id: str, graph_data: dict, manifest: dict
+) -> Path:
     gen_dir = generations_dir / generation_id
     gen_dir.mkdir(parents=True, exist_ok=False)
     graph_path = gen_dir / "global-graph.json"

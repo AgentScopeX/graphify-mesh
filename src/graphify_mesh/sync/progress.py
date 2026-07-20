@@ -7,6 +7,7 @@ Renders only when stderr is a real terminal; otherwise `tick()` is a no-op
 so piping output to a file or a systemd journal never fills up with
 carriage-return noise.
 """
+
 from __future__ import annotations
 
 import sys
@@ -20,6 +21,7 @@ class ProgressBar:
         self.label = label
         self.stream = stream if stream is not None else sys.stderr
         self.enabled = self.stream.isatty()
+        self._last_len = 0
 
     def tick(self, i: int, detail: str) -> None:
         if not self.enabled or self.total <= 0:
@@ -27,7 +29,7 @@ class ProgressBar:
         filled = int(BAR_WIDTH * i / self.total)
         bar = "#" * filled + "-" * (BAR_WIDTH - filled)
         line = f"\r{self.label} [{bar}] {i}/{self.total} {detail}"
-        pad = max(0, self._last_len - len(line)) if hasattr(self, "_last_len") else 0
+        pad = max(0, self._last_len - len(line))
         self.stream.write(line + (" " * pad))
         self.stream.flush()
         self._last_len = len(line)

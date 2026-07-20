@@ -1,10 +1,11 @@
 """Whole-transaction flock so concurrent graphify-mesh-sync runs cannot overlap."""
+
 from __future__ import annotations
 
 import contextlib
 import fcntl
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 
 class LockHeldError(RuntimeError):

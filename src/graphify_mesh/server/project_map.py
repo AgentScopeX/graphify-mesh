@@ -9,6 +9,7 @@ Fails closed like everything else in this package: an unresolvable repo
 e.g. registered but never synced yet) returns `resolved=False` with a
 `degraded` reason, never a silently-empty-looking success.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -35,7 +36,9 @@ class ProjectMapResult:
 def project_map(repo_id: str, generation: Generation) -> ProjectMapResult:
     node_ids = generation.nodes_by_repo.get(repo_id)
     if not node_ids:
-        return ProjectMapResult(resolved=False, repo=repo_id, degraded=["repo_not_in_current_generation"])
+        return ProjectMapResult(
+            resolved=False, repo=repo_id, degraded=["repo_not_in_current_generation"]
+        )
 
     community_breakdown: dict[str, int] = {}
     scored: list[tuple[int, str, str]] = []  # (degree, key, node_id) — key used as tie-break
@@ -67,6 +70,8 @@ def project_map(repo_id: str, generation: Generation) -> ProjectMapResult:
         resolved=True,
         repo=repo_id,
         node_count=len(node_ids),
-        community_breakdown=dict(sorted(community_breakdown.items(), key=lambda kv: (-kv[1], kv[0]))),
+        community_breakdown=dict(
+            sorted(community_breakdown.items(), key=lambda kv: (-kv[1], kv[0]))
+        ),
         top_hubs=top_hubs,
     )

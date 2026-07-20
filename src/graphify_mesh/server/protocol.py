@@ -12,12 +12,13 @@ stdin close" — the observed 10-stale-`graphify.serve`-process leak,
 `for line in stream` loop: it returns (never raises, never hangs) the
 moment the client closes its end of the pipe.
 """
+
 from __future__ import annotations
 
 import json
 import logging
 import sys
-from typing import Callable, Iterator, Optional
+from collections.abc import Callable, Iterator
 
 log = logging.getLogger("graphify_mesh.server.protocol")
 
@@ -31,7 +32,7 @@ MAX_LINE_BYTES = 10 * 1024 * 1024
 # `handler(message) -> response-dict | None`. `None` means "this message was
 # a JSON-RPC notification (no `id`), so JSON-RPC 2.0 forbids a response" —
 # never write a response for those.
-JsonRpcHandler = Callable[[dict], Optional[dict]]
+JsonRpcHandler = Callable[[dict], dict | None]
 
 
 def _drain_line(stream) -> None:
@@ -95,7 +96,9 @@ def serve(handler: JsonRpcHandler, in_stream=None, out_stream=None) -> None:
             # stack frames. Notifications (no "id") get no response at all.
             log.exception("handler raised while processing message")
             if "id" in message:
-                write_message(error_response(message.get("id"), -32603, "internal error"), out_stream)
+                write_message(
+                    error_response(message.get("id"), -32603, "internal error"), out_stream
+                )
             continue
         if response is not None:
             write_message(response, out_stream)

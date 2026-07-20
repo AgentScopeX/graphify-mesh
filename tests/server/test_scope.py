@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from conftest import registry_repo, write_registry
 
 from graphify_mesh.server.scope import (
     ScopeResolutionError,
@@ -10,7 +11,6 @@ from graphify_mesh.server.scope import (
     resolve_repo_list,
     resolve_scope,
 )
-from conftest import registry_repo, write_registry
 
 
 def test_fail_closed_no_cwd_match_raises_not_silent_global(tmp_path):

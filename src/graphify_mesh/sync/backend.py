@@ -10,6 +10,7 @@ resolving the interpreter behind `graphify_bin` and probing it for
 `graspologic` importability, then compares the answer against the pinned
 constant in config.py and hard-fails (raises) on any disagreement.
 """
+
 from __future__ import annotations
 
 import shutil
@@ -27,7 +28,9 @@ LOUVAIN_BACKEND = "louvain"
 # importlib.util.find_spec is a pure introspection call — it does not import
 # (and therefore does not execute) graspologic, so this probe is cheap and
 # side-effect-free even if graspologic happens to be installed.
-_PROBE_CODE = "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('graspologic') else 1)"
+_PROBE_CODE = (
+    "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('graspologic') else 1)"
+)
 
 
 class BackendMismatchError(RuntimeError):
@@ -83,7 +86,9 @@ def detect_actual_backend(graphify_bin: str, timeout: int = 15) -> str:
     interpreter = _resolve_interpreter(graphify_bin)
     argv = resolve_bin_argv(interpreter) + ["-c", _PROBE_CODE]
     try:
-        proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        proc = subprocess.run(  # noqa: S603 - structured argv, no shell; binary from operator config
+            argv, capture_output=True, text=True, timeout=timeout
+        )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise BackendMismatchError(
             f"could not probe interpreter {interpreter!r} for graphify_bin={graphify_bin!r}: {exc}"

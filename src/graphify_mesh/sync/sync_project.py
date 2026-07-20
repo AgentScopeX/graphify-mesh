@@ -4,6 +4,7 @@ Decision (`decide_action`) and outcome classification
 (`_classify_post_invoke`) both use dict-dispatch instead of if/elif chains,
 per project code style rules.
 """
+
 from __future__ import annotations
 
 import shutil
@@ -12,7 +13,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from graphify_mesh.sync import graphify_cli
-from graphify_mesh.sync.state import SourceDigest, file_content_hash, graph_node_edge_counts, is_worktree_dirty
+from graphify_mesh.sync.state import (
+    SourceDigest,
+    file_content_hash,
+    graph_node_edge_counts,
+    is_worktree_dirty,
+)
 
 ACTION_SKIP = "skip"
 ACTION_UPDATE = "update"
@@ -92,7 +98,9 @@ def apply_action(
     dirty = is_worktree_dirty(root)
 
     if action == ACTION_SKIP:
-        return ProjectOutcome(repo_id, action, STATUS_UNCHANGED, dirty_worktree=dirty, new_manifest=current_manifest)
+        return ProjectOutcome(
+            repo_id, action, STATUS_UNCHANGED, dirty_worktree=dirty, new_manifest=current_manifest
+        )
 
     snapshot_path: Path | None = None
     old_hash = file_content_hash(graph_path)
@@ -112,19 +120,43 @@ def apply_action(
         _restore_snapshot(snapshot_path, graph_path)
         status = STATUS_BOOTSTRAP_FAILED if action == ACTION_BOOTSTRAP else STATUS_FAILED
         _cleanup_snapshot(snapshot_path)
-        return ProjectOutcome(repo_id, action, status, reason=f"exit={result.returncode}: {result.stderr.strip()[:300]}", dirty_worktree=dirty)
+        return ProjectOutcome(
+            repo_id,
+            action,
+            status,
+            reason=f"exit={result.returncode}: {result.stderr.strip()[:300]}",
+            dirty_worktree=dirty,
+        )
 
     if action == ACTION_BOOTSTRAP:
         if not graph_path.exists():
             _cleanup_snapshot(snapshot_path)
-            return ProjectOutcome(repo_id, action, STATUS_BOOTSTRAP_FAILED, reason="cli exited 0 but no graph.json was produced", dirty_worktree=dirty)
+            return ProjectOutcome(
+                repo_id,
+                action,
+                STATUS_BOOTSTRAP_FAILED,
+                reason="cli exited 0 but no graph.json was produced",
+                dirty_worktree=dirty,
+            )
         _cleanup_snapshot(snapshot_path)
-        return ProjectOutcome(repo_id, action, STATUS_BOOTSTRAPPED, dirty_worktree=dirty, new_manifest=current_manifest)
+        return ProjectOutcome(
+            repo_id,
+            action,
+            STATUS_BOOTSTRAPPED,
+            dirty_worktree=dirty,
+            new_manifest=current_manifest,
+        )
 
     if not graph_path.exists():
         _restore_snapshot(snapshot_path, graph_path)
         _cleanup_snapshot(snapshot_path)
-        return ProjectOutcome(repo_id, action, STATUS_FAILED, reason="cli exited 0 but graph.json disappeared", dirty_worktree=dirty)
+        return ProjectOutcome(
+            repo_id,
+            action,
+            STATUS_FAILED,
+            reason="cli exited 0 but graph.json disappeared",
+            dirty_worktree=dirty,
+        )
 
     new_hash = file_content_hash(graph_path)
     new_counts = graph_node_edge_counts(graph_path) or (0, 0)
@@ -133,7 +165,9 @@ def apply_action(
         # No prior file existed even though has_graph was assumed true
         # upstream (race) — accept whatever was produced.
         _cleanup_snapshot(snapshot_path)
-        return ProjectOutcome(repo_id, action, STATUS_UPDATED, dirty_worktree=dirty, new_manifest=current_manifest)
+        return ProjectOutcome(
+            repo_id, action, STATUS_UPDATED, dirty_worktree=dirty, new_manifest=current_manifest
+        )
 
     outcome_status = _classify_shrink(old_hash, new_hash or "", old_counts, new_counts)
 
@@ -144,13 +178,18 @@ def apply_action(
             repo_id,
             action,
             STATUS_SHRINK_REFUSED,
-            reason=f"cli reported success but node/edge counts did not grow (old={old_counts} new={new_counts}); last-good graph.json restored",
+            reason=(
+                f"cli reported success but node/edge counts did not grow "
+                f"(old={old_counts} new={new_counts}); last-good graph.json restored"
+            ),
             dirty_worktree=dirty,
         )
 
     _cleanup_snapshot(snapshot_path)
     new_manifest = current_manifest if outcome_status == STATUS_UPDATED else current_manifest
-    return ProjectOutcome(repo_id, action, outcome_status, dirty_worktree=dirty, new_manifest=new_manifest)
+    return ProjectOutcome(
+        repo_id, action, outcome_status, dirty_worktree=dirty, new_manifest=new_manifest
+    )
 
 
 def _restore_snapshot(snapshot_path: Path | None, graph_path: Path) -> None:

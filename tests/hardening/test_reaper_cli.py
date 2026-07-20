@@ -1,6 +1,7 @@
 """graphify-mesh-reap CLI wiring — argument parsing and output format only;
 the actual scan logic is covered by test_reaper.py against
 graphify_mesh.sync.reaper directly."""
+
 from __future__ import annotations
 
 import sys
@@ -43,7 +44,11 @@ def test_json_output_is_valid_json(monkeypatch, capsys):
     from graphify_mesh.sync.reaper import ReapCandidate
 
     monkeypatch.setattr(
-        _cli, "run_reaper", lambda kill=False: [ReapCandidate(pid=1, ppid=1, args="python -m graphify.serve x", reason="ppid==1")]
+        _cli,
+        "run_reaper",
+        lambda kill=False: [
+            ReapCandidate(pid=1, ppid=1, args="python -m graphify.serve x", reason="ppid==1")
+        ],
     )
     rc = _cli.main(["--json"])
     assert rc == 0

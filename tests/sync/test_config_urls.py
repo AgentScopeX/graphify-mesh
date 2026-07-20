@@ -1,6 +1,7 @@
 """SSRF guard contract: only http/https base URLs with a host may ever reach
 urllib in the naming/embedding backends — file://, gopher:// etc. must fail
 the health-check path without any request being attempted."""
+
 from __future__ import annotations
 
 import pytest

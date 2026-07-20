@@ -26,6 +26,7 @@ route with no matching consumer this run does not itself appear alone —
 `provides_api` and `consumes_api` are emitted together, exactly once each,
 only for a matched (provider, consumer) pair.
 """
+
 from __future__ import annotations
 
 import re
@@ -107,7 +108,9 @@ def extract_symfony_route_providers(repo_id: str, root: Path) -> list[ApiProvide
                 continue
             raw_path = path_match.group(1)
             methods_match = _METHODS_RE.search(body)
-            http_methods = _METHOD_TOKEN_RE.findall(methods_match.group(1)) if methods_match else ["GET"]
+            http_methods = (
+                _METHOD_TOKEN_RE.findall(methods_match.group(1)) if methods_match else ["GET"]
+            )
 
             # Enclosing method name (qualified_label = Class::method), best
             # effort: nearest preceding `class` + nearest following `function`.
@@ -164,7 +167,7 @@ def match_provides_consumes_edges(
     *different* repo's declared provider. No match => zero edges for that
     candidate — never a fuzzy/best-effort guess."""
     provider_index: dict[tuple[str, str], ApiProvider] = {}
-    for repo_id, providers in providers_by_repo.items():
+    for providers in providers_by_repo.values():
         for provider in providers:
             provider_index.setdefault((provider.http_method, provider.path_template), provider)
 
@@ -172,21 +175,30 @@ def match_provides_consumes_edges(
     emitted_pairs: set[tuple] = set()
     for consumer_repo, candidates in consumer_candidates_by_repo.items():
         for method, template, source_file in ((c[1], c[2], c[3]) for c in candidates):
-            provider = provider_index.get((method, template))
-            if provider is None or provider.repo == consumer_repo:
+            matched = provider_index.get((method, template))
+            if matched is None or matched.repo == consumer_repo:
                 continue
-            pair_key = (consumer_repo, source_file, provider.repo, provider.qualified_label, method, template)
+            pair_key = (
+                consumer_repo,
+                source_file,
+                matched.repo,
+                matched.qualified_label,
+                method,
+                template,
+            )
             if pair_key in emitted_pairs:
                 continue
             emitted_pairs.add(pair_key)
 
             provider_ref = LogicalRef(
-                repo=provider.repo, source_file=provider.source_file, qualified_label=provider.qualified_label
+                repo=matched.repo,
+                source_file=matched.source_file,
+                qualified_label=matched.qualified_label,
             )
             consumer_ref = LogicalRef(
                 repo=consumer_repo, source_file=source_file, qualified_label=f"{method} {template}"
             )
-            evidence = f"{method} {template} matched: provider {provider.repo}:{provider.source_file}"
+            evidence = f"{method} {template} matched: provider {matched.repo}:{matched.source_file}"
             edges.append(
                 OverlayEdge(
                     type="provides_api",

@@ -22,6 +22,7 @@ Fusion contract (plan WS5 bullet 3):
     so repeated identical queries return identical order regardless of dict
     iteration order.
 """
+
 from __future__ import annotations
 
 # --- RRF (Reciprocal Rank Fusion) ------------------------------------------
@@ -138,6 +139,7 @@ def mmr_select(
         if not selected:
             chosen = pool[0]
         else:
+
             def mmr_value(candidate: tuple[str, float]) -> float:
                 key, score = candidate
                 max_sim = max(

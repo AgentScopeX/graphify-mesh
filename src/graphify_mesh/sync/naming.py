@@ -27,14 +27,15 @@ and `Settings`, `run_naming`:
      communities that are new or whose membership actually changed —
      everything else keeps its previous name untouched.
 """
+
 from __future__ import annotations
 
 import json
 import logging
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
 
 from graphify_mesh.sync import graphify_cli
 from graphify_mesh.sync.backend import BackendCheckResult, assert_pinned_backend
@@ -67,7 +68,12 @@ def default_ollama_health_check(base_url: str, api_key: str, timeout: float) -> 
     exactly the degraded path it exists to detect, not a crash.
     """
     url = base_url.rstrip("/") + "/models"
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {api_key}"})
+    if not is_valid_http_base_url(url):
+        log.warning("ollama health check refused non-http(s) URL %s", url)
+        return False
+    req = urllib.request.Request(  # noqa: S310 - scheme validated above
+        url, headers={"Authorization": f"Bearer {api_key}"}
+    )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - fixed internal endpoint
             status = getattr(resp, "status", resp.getcode())
@@ -147,7 +153,9 @@ def run_naming(
         )
 
     check = health_check if health_check is not None else default_ollama_health_check
-    healthy = check(settings.ollama_base_url, settings.ollama_api_key, settings.ollama_health_timeout)
+    healthy = check(
+        settings.ollama_base_url, settings.ollama_api_key, settings.ollama_health_timeout
+    )
 
     if not healthy:
         log.warning(
@@ -210,7 +218,8 @@ def run_naming(
             # away the embedding/overlay/publish stages that haven't even
             # run yet).
             log.warning(
-                "graphify label failed mid-run (exit=%s: %s) — degrading naming for this generation, "
+                "graphify label failed mid-run (exit=%s: %s) — "
+                "degrading naming for this generation, "
                 "keeping whatever names are already on disk",
                 label_result.returncode,
                 label_result.stderr.strip()[:500],
@@ -264,7 +273,9 @@ def run_naming(
     )
 
 
-def restore_last_global_community_names(graph_data: dict, previous_global_graph: dict | None) -> dict:
+def restore_last_global_community_names(
+    graph_data: dict, previous_global_graph: dict | None
+) -> dict:
     """Degraded-mode fallback (C23).
 
     Interpretation chosen (see WS2 design deliverable 3): when Ollama is

@@ -37,12 +37,15 @@ from `<auto_tag>::...` to `<true_repo_id>::...` in place. Runs once,
 immediately after merge, before naming/embedding/overlay/lexical-index, so
 every downstream stage and the published artifact carry the real repo_id.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
 
 
-def compute_tag_to_repo_id(sorted_graph_paths: list[Path], sorted_repo_ids: list[str]) -> dict[str, str]:
+def compute_tag_to_repo_id(
+    sorted_graph_paths: list[Path], sorted_repo_ids: list[str]
+) -> dict[str, str]:
     """`sorted_graph_paths`/`sorted_repo_ids` must be the SAME order-aligned
     lists passed to `graphify_cli.run_merge_graphs` (pipeline.py already
     builds them this way: `sorted_repo_ids = sorted(graph_paths_by_repo)`,
@@ -62,7 +65,7 @@ def compute_tag_to_repo_id(sorted_graph_paths: list[Path], sorted_repo_ids: list
             f"for {len(sorted_repo_ids)} repo ids — merge input paths and repo id list "
             "must be the same, order-aligned list"
         )
-    return dict(zip(tags, sorted_repo_ids))
+    return dict(zip(tags, sorted_repo_ids, strict=True))
 
 
 def rewrite_repo_tags(graph_data: dict, tag_to_repo_id: dict[str, str]) -> dict:

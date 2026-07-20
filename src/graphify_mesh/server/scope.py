@@ -14,6 +14,7 @@ candidate-generation time. Doing this only as a final filter step was an
 explicitly named failure mode in the plan (a large repo's global top-K can
 crowd out every current-project hit before the filter ever runs).
 """
+
 from __future__ import annotations
 
 import json
@@ -85,7 +86,7 @@ def resolve_scope(scope: str | None, cwd: Path, entries: list[RegistryEntry]) ->
     None/""/"current" -> resolve cwd; "all" -> no filter; "repo:<id>" ->
     explicit single repo, validated against the registry. Any other shape
     raises."""
-    if scope in (None, "", "current"):
+    if scope is None or scope in ("", "current"):
         repo_id = _match_cwd(cwd, entries)
         if repo_id is None:
             raise ScopeResolutionError(
@@ -102,13 +103,19 @@ def resolve_scope(scope: str | None, cwd: Path, entries: list[RegistryEntry]) ->
         repo_id = scope[len("repo:") :]
         known = {e.repo_id for e in entries if e.enabled}
         if repo_id not in known:
-            raise ScopeResolutionError(f"unknown or disabled repo_id {repo_id!r} in scope={scope!r}")
+            raise ScopeResolutionError(
+                f"unknown or disabled repo_id {repo_id!r} in scope={scope!r}"
+            )
         return ScopeDecision(mode="repo", repo_ids=frozenset({repo_id}))
 
-    raise ScopeResolutionError(f"invalid scope {scope!r}: expected 'current', 'all', or 'repo:<id>'")
+    raise ScopeResolutionError(
+        f"invalid scope {scope!r}: expected 'current', 'all', or 'repo:<id>'"
+    )
 
 
-def resolve_repo_list(repos: list[str] | None, entries: list[RegistryEntry]) -> frozenset[str] | None:
+def resolve_repo_list(
+    repos: list[str] | None, entries: list[RegistryEntry]
+) -> frozenset[str] | None:
     """For `cross_project(repos=...)`: an explicit repo list is validated
     against the registry (unknown repo_id is a hard error, per fail-closed
     convention); `None`/empty means "all registered, enabled repos" — this
@@ -119,5 +126,7 @@ def resolve_repo_list(repos: list[str] | None, entries: list[RegistryEntry]) -> 
     known = {e.repo_id for e in entries if e.enabled}
     unknown = set(repos) - known
     if unknown:
-        raise ScopeResolutionError(f"unknown or disabled repo_id(s) in cross_project repos=: {sorted(unknown)}")
+        raise ScopeResolutionError(
+            f"unknown or disabled repo_id(s) in cross_project repos=: {sorted(unknown)}"
+        )
     return frozenset(repos)

@@ -5,6 +5,7 @@ human-named global graph with a cross-project dependency/similarity/API overlay.
 See the `sync` subpackage for the merge/naming/embed/overlay/publish pipeline
 and the `server` subpackage for the stdio MCP query server.
 """
+
 from __future__ import annotations
 
 __version__ = "0.0.2"

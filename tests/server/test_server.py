@@ -3,14 +3,26 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from conftest import (
+    build_generation,
+    fake_embed_query_fn,
+    make_link,
+    make_node,
+    registry_repo,
+    write_registry,
+)
+
 from graphify_mesh.server.config import ServerConfig
 from graphify_mesh.server.server import GraphifyMeshServer
-from conftest import build_generation, fake_embed_query_fn, make_link, make_node, registry_repo, write_registry
 
 
 def _server(tmp_path: Path, cwd: Path, embed_query_fn=None) -> GraphifyMeshServer:
-    config = ServerConfig.from_env(mesh_root=tmp_path, registry_path=tmp_path / "bin" / "registry.json")
-    server = GraphifyMeshServer(config, cwd=cwd, embed_query_fn=embed_query_fn or fake_embed_query_fn())
+    config = ServerConfig.from_env(
+        mesh_root=tmp_path, registry_path=tmp_path / "bin" / "registry.json"
+    )
+    server = GraphifyMeshServer(
+        config, cwd=cwd, embed_query_fn=embed_query_fn or fake_embed_query_fn()
+    )
     return server
 
 
@@ -46,7 +58,9 @@ def test_unknown_method_returns_json_rpc_error():
 def test_search_degrades_gracefully_when_no_generation_published(tmp_path):
     write_registry(tmp_path / "bin" / "registry.json", [registry_repo("acme.repo", tmp_path)])
     server = _server(tmp_path, tmp_path)
-    response = server.handle_message(_rpc("tools/call", {"name": "search", "arguments": {"q": "widget"}}))
+    response = server.handle_message(
+        _rpc("tools/call", {"name": "search", "arguments": {"q": "widget"}})
+    )
     result = response["result"]
     assert result["isError"] is True
     assert "no consistent published generation" in result["content"][0]["text"]
@@ -64,9 +78,13 @@ def test_search_scope_fail_closed_at_tool_layer(tmp_path, monkeypatch):
     # Bypass the store's real generation load requirement by monkeypatching
     # `_generation` to a trivial synthetic one, so this test isolates the
     # SCOPE fail-closed behavior from generation-load concerns.
-    monkeypatch.setattr(server, "_generation", lambda: build_generation([make_node("acme.registered", "X", "x.py")]))
+    monkeypatch.setattr(
+        server, "_generation", lambda: build_generation([make_node("acme.registered", "X", "x.py")])
+    )
 
-    response = server.handle_message(_rpc("tools/call", {"name": "search", "arguments": {"q": "x"}}))
+    response = server.handle_message(
+        _rpc("tools/call", {"name": "search", "arguments": {"q": "x"}})
+    )
     result = response["result"]
     assert result["isError"] is True
     assert "cannot resolve implicit scope" in result["content"][0]["text"]
@@ -83,7 +101,9 @@ def test_search_tool_end_to_end_with_synthetic_generation(tmp_path, monkeypatch)
     server = _server(tmp_path, root)
     monkeypatch.setattr(server, "_generation", lambda: generation)
 
-    response = server.handle_message(_rpc("tools/call", {"name": "search", "arguments": {"q": "OrderService"}}))
+    response = server.handle_message(
+        _rpc("tools/call", {"name": "search", "arguments": {"q": "OrderService"}})
+    )
     result = response["result"]
     assert result["isError"] is False
     payload = json.loads(result["content"][0]["text"])
@@ -111,7 +131,9 @@ def test_find_similar_tool_end_to_end(tmp_path, monkeypatch):
     generation = build_generation([seed, neighbor], links=[make_link("seed", "nb")])
     server = _server(tmp_path, tmp_path)
     monkeypatch.setattr(server, "_generation", lambda: generation)
-    response = server.handle_message(_rpc("tools/call", {"name": "find_similar", "arguments": {"node": "Gateway"}}))
+    response = server.handle_message(
+        _rpc("tools/call", {"name": "find_similar", "arguments": {"node": "Gateway"}})
+    )
     payload = json.loads(response["result"]["content"][0]["text"])
     assert payload["resolved"] is True
 
@@ -122,7 +144,9 @@ def test_project_map_tool_end_to_end(tmp_path, monkeypatch):
     generation = build_generation([node])
     server = _server(tmp_path, tmp_path)
     monkeypatch.setattr(server, "_generation", lambda: generation)
-    response = server.handle_message(_rpc("tools/call", {"name": "project_map", "arguments": {"repo": "acme.repo"}}))
+    response = server.handle_message(
+        _rpc("tools/call", {"name": "project_map", "arguments": {"repo": "acme.repo"}})
+    )
     payload = json.loads(response["result"]["content"][0]["text"])
     assert payload["resolved"] is True
     assert payload["node_count"] == 1
@@ -136,7 +160,10 @@ def test_context_pack_tool_end_to_end(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_generation", lambda: generation)
 
     response = server.handle_message(
-        _rpc("tools/call", {"name": "context_pack", "arguments": {"goal": "order goal", "token_budget": 5000}})
+        _rpc(
+            "tools/call",
+            {"name": "context_pack", "arguments": {"goal": "order goal", "token_budget": 5000}},
+        )
     )
     payload = json.loads(response["result"]["content"][0]["text"])
     assert payload["cards"]
@@ -144,5 +171,7 @@ def test_context_pack_tool_end_to_end(tmp_path, monkeypatch):
 
 def test_unknown_tool_name_returns_is_error():
     server = _server(Path("/tmp"), Path("/tmp"))
-    response = server.handle_message(_rpc("tools/call", {"name": "not-a-real-tool", "arguments": {}}))
+    response = server.handle_message(
+        _rpc("tools/call", {"name": "not-a-real-tool", "arguments": {}})
+    )
     assert response["result"]["isError"] is True

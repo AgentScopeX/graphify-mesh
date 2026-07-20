@@ -16,16 +16,18 @@ Every tool call is wrapped so `ScopeResolutionError` and
 JSON-RPC protocol error) — a client always gets a structured response it
 can read, never a dead pipe.
 """
+
 from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from graphify_mesh.server import context_pack as context_pack_mod
 from graphify_mesh.server import project_map as project_map_mod
-from graphify_mesh.server import protocol, ranking, similar as similar_mod
+from graphify_mesh.server import protocol, ranking
+from graphify_mesh.server import similar as similar_mod
 from graphify_mesh.server.config import ServerConfig
 from graphify_mesh.server.embed_query import make_embed_query_fn
 from graphify_mesh.server.retrieval import Hit, rank
@@ -107,7 +109,9 @@ def _hit_to_dict(hit: Hit, generation: Generation) -> dict:
 
 
 class GraphifyMeshServer:
-    def __init__(self, config: ServerConfig, cwd: Path | None = None, embed_query_fn: Callable | None = None):
+    def __init__(
+        self, config: ServerConfig, cwd: Path | None = None, embed_query_fn: Callable | None = None
+    ):
         self.config = config
         self.store = GenerationStore(config)
         self._cwd_override = cwd
@@ -148,7 +152,10 @@ class GraphifyMeshServer:
             raise ToolError(str(exc)) from exc
         generation = self._generation()
         ranked = rank(query, generation, repo_filter, k, self.embed_query_fn)
-        return {"hits": [_hit_to_dict(h, generation) for h in ranked.hits], "degraded": ranked.degraded}
+        return {
+            "hits": [_hit_to_dict(h, generation) for h in ranked.hits],
+            "degraded": ranked.degraded,
+        }
 
     def tool_find_similar(self, arguments: dict) -> dict:
         node = arguments.get("node", "")
@@ -240,12 +247,19 @@ class GraphifyMeshServer:
         return [
             {
                 "name": "search",
-                "description": "Hybrid lexical+vector+structural search within a scope (current project by default). Fails closed if scope='current' can't be resolved against registry.json.",
+                "description": (
+                    "Hybrid lexical+vector+structural search within a scope (current project "
+                    "by default). Fails closed if scope='current' can't be resolved against "
+                    "registry.json."
+                ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "q": {"type": "string"},
-                        "scope": {"type": "string", "description": "'current' (default), 'all', or 'repo:<id>'"},
+                        "scope": {
+                            "type": "string",
+                            "description": "'current' (default), 'all', or 'repo:<id>'",
+                        },
                         "k": {"type": "integer", "default": ranking.DEFAULT_K},
                     },
                     "required": ["q"],
@@ -253,7 +267,9 @@ class GraphifyMeshServer:
             },
             {
                 "name": "cross_project",
-                "description": "Explicit cross-repo hybrid search, optionally restricted to a repo_id list.",
+                "description": (
+                    "Explicit cross-repo hybrid search, optionally restricted to a repo_id list."
+                ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -266,7 +282,10 @@ class GraphifyMeshServer:
             },
             {
                 "name": "find_similar",
-                "description": "Cross-project (and optionally same-project) structurally/semantically similar nodes to a given node/label.",
+                "description": (
+                    "Cross-project (and optionally same-project) structurally/semantically "
+                    "similar nodes to a given node/label."
+                ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -279,7 +298,10 @@ class GraphifyMeshServer:
             },
             {
                 "name": "project_map",
-                "description": "Structural overview of one registered repo in the current generation: node count, community breakdown, top hub nodes.",
+                "description": (
+                    "Structural overview of one registered repo in the current generation: "
+                    "node count, community breakdown, top hub nodes."
+                ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {"repo": {"type": "string"}},
@@ -288,7 +310,10 @@ class GraphifyMeshServer:
             },
             {
                 "name": "context_pack",
-                "description": "Evidence cards (citations, snippets, confidence) for a goal, truncated to a token budget without ever splitting a card.",
+                "description": (
+                    "Evidence cards (citations, snippets, confidence) for a goal, truncated "
+                    "to a token budget without ever splitting a card."
+                ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -304,7 +329,10 @@ class GraphifyMeshServer:
     def call_tool(self, name: str, arguments: dict) -> dict:
         method_name = self.TOOLS.get(name)
         if method_name is None:
-            return {"content": [{"type": "text", "text": f"unknown tool: {name!r}"}], "isError": True}
+            return {
+                "content": [{"type": "text", "text": f"unknown tool: {name!r}"}],
+                "isError": True,
+            }
         method = getattr(self, method_name)
         try:
             result = method(arguments or {})

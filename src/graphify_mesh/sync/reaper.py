@@ -41,6 +41,7 @@ Design notes:
     or kill a real process — they feed synthetic `ps` output and record
     calls to a fake killer instead.
 """
+
 from __future__ import annotations
 
 import os
@@ -140,17 +141,24 @@ def find_orphan_candidates(rows: list[ProcRow]) -> list[ReapCandidate]:
         if not is_watched(row.args):
             continue
         if row.ppid <= 1:
-            candidates.append(ReapCandidate(row.pid, row.ppid, row.args, "ppid==1 (reparented to init)"))
+            candidates.append(
+                ReapCandidate(row.pid, row.ppid, row.args, "ppid==1 (reparented to init)")
+            )
             continue
         if row.ppid not in by_pid:
             candidates.append(
-                ReapCandidate(row.pid, row.ppid, row.args, f"parent pid {row.ppid} no longer exists")
+                ReapCandidate(
+                    row.pid, row.ppid, row.args, f"parent pid {row.ppid} no longer exists"
+                )
             )
             continue
         if not _parent_is_live(row.ppid, by_pid):
             candidates.append(
                 ReapCandidate(
-                    row.pid, row.ppid, row.args, f"parent pid {row.ppid} is not a shell/claude-code process"
+                    row.pid,
+                    row.ppid,
+                    row.args,
+                    f"parent pid {row.ppid} is not a shell/claude-code process",
                 )
             )
     return candidates

@@ -11,6 +11,7 @@ response's `degraded` field), mirroring the pipeline's own "never crash on a
 down local service" convention (C9) — just applied at query time instead of
 build time.
 """
+
 from __future__ import annotations
 
 import logging
@@ -27,14 +28,20 @@ log = logging.getLogger("graphify_mesh.server.embed_query")
 QUERY_EMBED_TIMEOUT = 10.0
 
 
-def make_embed_query_fn(base_url: str | None = None, model: str | None = None, timeout: float = QUERY_EMBED_TIMEOUT):
+def make_embed_query_fn(
+    base_url: str | None = None, model: str | None = None, timeout: float = QUERY_EMBED_TIMEOUT
+):
     """Returns a `str -> list[float] | None` callable matching
     `retrieval.EmbedQueryFn`, bound to the resolved base_url/model (env
     override via the SAME `GRAPHIFY_MESH_OLLAMA_EMBED_*` variables the sync
     pipeline reads, so a query never drifts onto a different embedding
     space than the one the published vectors were built with)."""
-    resolved_base_url = base_url or os.environ.get("GRAPHIFY_MESH_OLLAMA_EMBED_BASE_URL", EMBED_DEFAULT_BASE_URL)
-    resolved_model = model or os.environ.get("GRAPHIFY_MESH_OLLAMA_EMBED_MODEL", EMBED_DEFAULT_MODEL)
+    resolved_base_url = base_url or os.environ.get(
+        "GRAPHIFY_MESH_OLLAMA_EMBED_BASE_URL", EMBED_DEFAULT_BASE_URL
+    )
+    resolved_model = model or os.environ.get(
+        "GRAPHIFY_MESH_OLLAMA_EMBED_MODEL", EMBED_DEFAULT_MODEL
+    )
 
     def embed_query(query: str) -> list[float] | None:
         if not query or not query.strip():
@@ -42,7 +49,11 @@ def make_embed_query_fn(base_url: str | None = None, model: str | None = None, t
         try:
             vectors = embed_batch(resolved_base_url, resolved_model, [query], timeout=timeout)
         except RuntimeError as exc:
-            log.warning("graphify-mesh: query embedding unavailable, degrading to lexical+structural only: %s", exc)
+            log.warning(
+                "graphify-mesh: query embedding unavailable, "
+                "degrading to lexical+structural only: %s",
+                exc,
+            )
             return None
         if not vectors:
             return None

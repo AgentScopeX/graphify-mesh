@@ -7,6 +7,7 @@ approved root (C16 path-traversal guard). Reconciles the result against
 `registry.json` (the source of truth for repo identity) to produce a report
 of registered / renamed / missing / broken / removed / duplicate projects.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -112,7 +113,9 @@ def discover_filesystem(scan_root: Path, approved_root: Path) -> list[Discovered
         if not link_path.exists():
             # Dangling symlink (target missing) — broken, do not crash.
             results.append(
-                DiscoveredLink(source_root=project_dir, link_path=link_path, target=None, broken=True)
+                DiscoveredLink(
+                    source_root=project_dir, link_path=link_path, target=None, broken=True
+                )
             )
             continue
         target = link_path.resolve()
@@ -123,7 +126,10 @@ def discover_filesystem(scan_root: Path, approved_root: Path) -> list[Discovered
             # anything else is rejected.
             results.append(
                 DiscoveredLink(
-                    source_root=project_dir, link_path=link_path, target=target, rejected_traversal=True
+                    source_root=project_dir,
+                    link_path=link_path,
+                    target=target,
+                    rejected_traversal=True,
                 )
             )
             continue
@@ -158,7 +164,11 @@ def reconcile(
     for collection_path, repo_ids in seen_collection_paths.items():
         if len(repo_ids) > 1:
             report.duplicates.append(
-                {"reason": "registry_duplicate_collection_path", "collection_path": collection_path, "repo_ids": repo_ids}
+                {
+                    "reason": "registry_duplicate_collection_path",
+                    "collection_path": collection_path,
+                    "repo_ids": repo_ids,
+                }
             )
 
     # Map resolved target -> list of discovered links pointing at it (dedup
@@ -174,7 +184,7 @@ def reconcile(
                 {
                     "reason": "multiple_symlinks_same_target",
                     "collection_path": target,
-                    "source_roots": sorted(str(l.source_root) for l in links),
+                    "source_roots": sorted(str(link.source_root) for link in links),
                 }
             )
 
@@ -202,7 +212,11 @@ def reconcile(
                 report.registered.append(entry.repo_id)
             else:
                 report.renamed.append(
-                    {"repo_id": entry.repo_id, "old_root": str(entry.root), "new_root": str(canonical.source_root)}
+                    {
+                        "repo_id": entry.repo_id,
+                        "old_root": str(entry.root),
+                        "new_root": str(canonical.source_root),
+                    }
                 )
 
         graph_file = entry.collection_path / "graph.json"

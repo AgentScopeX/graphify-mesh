@@ -19,6 +19,7 @@ rollback-on-crash-before-flip) vs the real gaps this file adds:
      existing test_dirty_worktree_recorded_read_only never asserts
      report.published).
 """
+
 from __future__ import annotations
 
 import json
@@ -32,12 +33,12 @@ _BIN_DIR = Path(__file__).resolve().parents[2] / "bin"
 if str(_BIN_DIR) not in sys.path:
     sys.path.insert(0, str(_BIN_DIR))
 
-from graphify_mesh.sync.pipeline import run  # noqa: E402
-from graphify_mesh.sync.publish import output_hash  # noqa: E402
+from _env_helper import FAKE_GRAPHIFY, Env  # noqa: E402
+
 from graphify_mesh.server.config import ServerConfig  # noqa: E402
 from graphify_mesh.server.store import GenerationStore, validate_manifest_consistency  # noqa: E402
-
-from _env_helper import FAKE_GRAPHIFY, Env  # noqa: E402
+from graphify_mesh.sync.pipeline import run  # noqa: E402
+from graphify_mesh.sync.publish import output_hash  # noqa: E402
 
 
 def _read_json(path: Path) -> dict:
@@ -71,8 +72,20 @@ def test_staging_isolation_zero_mtime_changes_under_graphify_tree(env):
     files (the per-project curated graphs, which in the real repo ARE
     tracked by git) are not touched — not just that the global/ output dir
     was never created."""
-    env.add_repo("example-org.styleguide", "example-org", "styleguide", "styleguide.example-org.dev.lo", "repo_a.json")
-    env.add_repo("example-org.services", "example-org", "services", "services.example-org.dev.lo", "repo_b.json")
+    env.add_repo(
+        "example-org.styleguide",
+        "example-org",
+        "styleguide",
+        "styleguide.example-org.dev.lo",
+        "repo_a.json",
+    )
+    env.add_repo(
+        "example-org.services",
+        "example-org",
+        "services",
+        "services.example-org.dev.lo",
+        "repo_b.json",
+    )
     env.write_registry()
 
     tracked_graphify_dir = env.mesh_root / "graphify"
@@ -94,8 +107,13 @@ def test_generation_mismatch_refused_on_wrong_output_hash(tmp_path):
     """Extends test_store.py's node-count-mismatch coverage: a manifest
     whose output_hash does not match the recomputed hash of
     global-graph.json (counts otherwise correct) must also be refused."""
-    config = ServerConfig.from_env(mesh_root=tmp_path, registry_path=tmp_path / "bin" / "registry.json")
-    graph = {"nodes": [{"id": "n1", "repo": "repo.a", "label": "Alpha", "source_file": "a.py"}], "links": []}
+    config = ServerConfig.from_env(
+        mesh_root=tmp_path, registry_path=tmp_path / "bin" / "registry.json"
+    )
+    graph = {
+        "nodes": [{"id": "n1", "repo": "repo.a", "label": "Alpha", "source_file": "a.py"}],
+        "links": [],
+    }
     manifest = {
         "generation_id": "gen-bad-hash",
         "created_at": "2026-07-20T00:00:00Z",
@@ -137,8 +155,10 @@ def test_generation_mismatch_refused_when_output_hash_missing(tmp_path):
     check' — validate_generation_manifest's required-keys check (reused by
     validate_manifest_consistency) already covers this; confirm the
     end-to-end store rejection path specifically."""
-    config = ServerConfig.from_env(mesh_root=tmp_path, registry_path=tmp_path / "bin" / "registry.json")
-    graph = {"nodes": [{"id": "n1", "repo": "repo.a", "label": "Alpha", "source_file": "a.py"}], "links": []}
+    graph = {
+        "nodes": [{"id": "n1", "repo": "repo.a", "label": "Alpha", "source_file": "a.py"}],
+        "links": [],
+    }
     manifest = {
         "generation_id": "gen-missing-hash",
         "created_at": "2026-07-20T00:00:00Z",
@@ -169,7 +189,10 @@ def test_four_projects_two_failing_fifty_percent_blocks_publish(env):
     assert first.published
 
     # Break 2 of 4 (50%) badly enough to exceed the 30% stale threshold.
-    for product, sub, repo_id in (("example-org", "b", "example-org.b"), ("example-org", "d", "example-org.d")):
+    for product, sub, repo_id in (
+        ("example-org", "b", "example-org.b"),
+        ("example-org", "d", "example-org.d"),
+    ):
         collection = env.collection_path(product, sub)
         env.set_control(collection, "fail")
         root = Path([r["root"] for r in env._repos if r["repo_id"] == repo_id][0])
@@ -183,7 +206,9 @@ def test_four_projects_two_failing_fifty_percent_blocks_publish(env):
     gen1 = os.path.realpath(settings.global_dir / "current")
     first_gen_dirs = sorted(p.name for p in settings.generations_dir.iterdir())
     assert os.path.realpath(settings.global_dir / "current") == gen1
-    assert len(first_gen_dirs) == 1  # second run's attempt never wrote a new generation past validate
+    assert (
+        len(first_gen_dirs) == 1
+    )  # second run's attempt never wrote a new generation past validate
 
 
 def test_four_projects_one_failing_twenty_five_percent_still_publishes(env):
@@ -224,7 +249,13 @@ def test_dirty_worktree_marker_is_informational_sync_still_publishes(env):
     informational only, never blocking."""
     import subprocess
 
-    root = env.add_repo("example-org.styleguide", "example-org", "styleguide", "styleguide.example-org.dev.lo", "repo_a.json")
+    root = env.add_repo(
+        "example-org.styleguide",
+        "example-org",
+        "styleguide",
+        "styleguide.example-org.dev.lo",
+        "repo_a.json",
+    )
     subprocess.run(["git", "init", "-q"], cwd=str(root), check=True)
     subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=str(root), check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=str(root), check=True)

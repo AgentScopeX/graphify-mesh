@@ -16,8 +16,20 @@ def _read_json(path: Path) -> dict:
 
 
 def test_first_run_publishes_generation(env):
-    env.add_repo("example-org.styleguide", "example-org", "styleguide", "styleguide.example-org.dev.lo", "repo_a.json")
-    env.add_repo("example-org.services", "example-org", "services", "services.example-org.dev.lo", "repo_b.json")
+    env.add_repo(
+        "example-org.styleguide",
+        "example-org",
+        "styleguide",
+        "styleguide.example-org.dev.lo",
+        "repo_a.json",
+    )
+    env.add_repo(
+        "example-org.services",
+        "example-org",
+        "services",
+        "services.example-org.dev.lo",
+        "repo_b.json",
+    )
     env.write_registry()
 
     settings = env.settings()
@@ -34,8 +46,20 @@ def test_first_run_publishes_generation(env):
 
 
 def test_delete_project_pruned_from_global_no_dangling_edges(env):
-    env.add_repo("example-org.styleguide", "example-org", "styleguide", "styleguide.example-org.dev.lo", "repo_a.json")
-    env.add_repo("example-org.services", "example-org", "services", "services.example-org.dev.lo", "repo_b.json")
+    env.add_repo(
+        "example-org.styleguide",
+        "example-org",
+        "styleguide",
+        "styleguide.example-org.dev.lo",
+        "repo_a.json",
+    )
+    env.add_repo(
+        "example-org.services",
+        "example-org",
+        "services",
+        "services.example-org.dev.lo",
+        "repo_b.json",
+    )
     env.write_registry()
     settings = env.settings()
     first = run(settings)
@@ -60,8 +84,20 @@ def test_delete_project_pruned_from_global_no_dangling_edges(env):
 
 
 def test_remove_project_flagged_and_excluded(env):
-    env.add_repo("example-org.styleguide", "example-org", "styleguide", "styleguide.example-org.dev.lo", "repo_a.json")
-    env.add_repo("example-org.services", "example-org", "services", "services.example-org.dev.lo", "repo_b.json")
+    env.add_repo(
+        "example-org.styleguide",
+        "example-org",
+        "styleguide",
+        "styleguide.example-org.dev.lo",
+        "repo_a.json",
+    )
+    env.add_repo(
+        "example-org.services",
+        "example-org",
+        "services",
+        "services.example-org.dev.lo",
+        "repo_b.json",
+    )
     env.write_registry()
     settings = env.settings()
     run(settings)
@@ -71,11 +107,19 @@ def test_remove_project_flagged_and_excluded(env):
 
     assert "example-org.services" in report.reconciliation["removed"]
     project_repo_ids = {a["repo_id"] for a in report.project_actions}
-    assert "example-org.services" not in project_repo_ids  # pruned before per-project sync, not silently kept
+    assert (
+        "example-org.services" not in project_repo_ids
+    )  # pruned before per-project sync, not silently kept
 
 
 def test_broken_symlink_reported_not_crashed_pipeline(env):
-    root = env.add_repo("example-org.styleguide", "example-org", "styleguide", "styleguide.example-org.dev.lo", "repo_a.json")
+    root = env.add_repo(
+        "example-org.styleguide",
+        "example-org",
+        "styleguide",
+        "styleguide.example-org.dev.lo",
+        "repo_a.json",
+    )
     env.write_registry()
     settings = env.settings()
     first = run(settings)
@@ -95,7 +139,13 @@ def test_broken_symlink_reported_not_crashed_pipeline(env):
 
 
 def test_shrink_refusal_detected_last_good_kept(env):
-    env.add_repo("example-org.styleguide", "example-org", "styleguide", "styleguide.example-org.dev.lo", "repo_a.json")
+    env.add_repo(
+        "example-org.styleguide",
+        "example-org",
+        "styleguide",
+        "styleguide.example-org.dev.lo",
+        "repo_a.json",
+    )
     env.write_registry()
     collection = env.collection_path("example-org", "styleguide")
     original = _read_json(collection / "graph.json")
@@ -116,8 +166,20 @@ def test_shrink_refusal_detected_last_good_kept(env):
 
 
 def test_forbidden_edge_invariant_trips_validation(env):
-    env.add_repo("example-org.styleguide", "example-org", "styleguide", "styleguide.example-org.dev.lo", "repo_a.json")
-    env.add_repo("example-org.gamma", "example-org", "gamma", "gamma.example-org.dev.lo", "repo_forbidden_edge.json")
+    env.add_repo(
+        "example-org.styleguide",
+        "example-org",
+        "styleguide",
+        "styleguide.example-org.dev.lo",
+        "repo_a.json",
+    )
+    env.add_repo(
+        "example-org.gamma",
+        "example-org",
+        "gamma",
+        "gamma.example-org.dev.lo",
+        "repo_forbidden_edge.json",
+    )
     env.write_registry()
     settings = env.settings()
     report = run(settings)
@@ -130,8 +192,20 @@ def test_forbidden_edge_invariant_trips_validation(env):
 
 
 def test_atomic_publish_flips_forward_and_rollback_on_stale(env):
-    env.add_repo("example-org.styleguide", "example-org", "styleguide", "styleguide.example-org.dev.lo", "repo_a.json")
-    env.add_repo("example-org.services", "example-org", "services", "services.example-org.dev.lo", "repo_b.json")
+    env.add_repo(
+        "example-org.styleguide",
+        "example-org",
+        "styleguide",
+        "styleguide.example-org.dev.lo",
+        "repo_a.json",
+    )
+    env.add_repo(
+        "example-org.services",
+        "example-org",
+        "services",
+        "services.example-org.dev.lo",
+        "repo_b.json",
+    )
     env.write_registry()
     settings = env.settings()
 
@@ -163,7 +237,13 @@ def test_atomic_publish_flips_forward_and_rollback_on_stale(env):
 
 
 def test_publish_failure_between_write_and_flip_leaves_current_untouched(env, monkeypatch):
-    env.add_repo("example-org.styleguide", "example-org", "styleguide", "styleguide.example-org.dev.lo", "repo_a.json")
+    env.add_repo(
+        "example-org.styleguide",
+        "example-org",
+        "styleguide",
+        "styleguide.example-org.dev.lo",
+        "repo_a.json",
+    )
     env.write_registry()
     settings = env.settings()
 
@@ -192,8 +272,20 @@ def test_publish_failure_between_write_and_flip_leaves_current_untouched(env, mo
 
 
 def test_staging_isolation_dry_run_writes_nothing_outside_staging(env):
-    env.add_repo("example-org.styleguide", "example-org", "styleguide", "styleguide.example-org.dev.lo", "repo_a.json")
-    env.add_repo("example-org.services", "example-org", "services", "services.example-org.dev.lo", "repo_b.json")
+    env.add_repo(
+        "example-org.styleguide",
+        "example-org",
+        "styleguide",
+        "styleguide.example-org.dev.lo",
+        "repo_a.json",
+    )
+    env.add_repo(
+        "example-org.services",
+        "example-org",
+        "services",
+        "services.example-org.dev.lo",
+        "repo_b.json",
+    )
     env.write_registry()
     settings = env.settings(dry_run=True)
 
@@ -209,7 +301,13 @@ def test_staging_isolation_dry_run_writes_nothing_outside_staging(env):
 
 
 def test_home_only_redirected_during_merge_graphs_call(env, monkeypatch):
-    env.add_repo("example-org.styleguide", "example-org", "styleguide", "styleguide.example-org.dev.lo", "repo_a.json")
+    env.add_repo(
+        "example-org.styleguide",
+        "example-org",
+        "styleguide",
+        "styleguide.example-org.dev.lo",
+        "repo_a.json",
+    )
     env.write_registry()
     settings = env.settings()
 
@@ -240,7 +338,13 @@ def test_skip_labeling_makes_zero_naming_calls(env):
     naming.run_naming() unconditionally and only used skip_labeling for a
     log message + the validation bypass, so a "skip" run still silently
     executed real cluster-only/label subprocess calls."""
-    env.add_repo("example-org.styleguide", "example-org", "styleguide", "styleguide.example-org.dev.lo", "repo_a.json")
+    env.add_repo(
+        "example-org.styleguide",
+        "example-org",
+        "styleguide",
+        "styleguide.example-org.dev.lo",
+        "repo_a.json",
+    )
     env.write_registry()
     # Force the health check to True (would-be-healthy) so if the bug
     # regresses, run_naming would actually proceed into cluster-only/label
@@ -254,4 +358,6 @@ def test_skip_labeling_makes_zero_naming_calls(env):
     assert report.labeling == "skipped (--skip-labeling)"
     call_log = env.read_call_log()
     naming_calls = [c for c in call_log if c.get("cmd") in ("cluster-only", "label")]
-    assert naming_calls == [], f"skip_labeling=True must make zero naming calls, got: {naming_calls}"
+    assert naming_calls == [], (
+        f"skip_labeling=True must make zero naming calls, got: {naming_calls}"
+    )

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from graphify_mesh.sync import lexical_index
 from graphify_mesh.sync.pipeline import run
@@ -75,7 +74,9 @@ def test_build_lexical_index_field_boosts_and_determinism():
 
 def test_build_lexical_index_alias_exact_and_node_id_index():
     graphs_by_repo = {
-        "repo.a": {"nodes": [{"id": "n1", "label": "TimeService", "source_file": "src/TimeService.php"}]}
+        "repo.a": {
+            "nodes": [{"id": "n1", "label": "TimeService", "source_file": "src/TimeService.php"}]
+        }
     }
     result = lexical_index.build_lexical_index(graphs_by_repo, {})
     assert "timeservice" in result.data["alias_exact"]
@@ -101,5 +102,7 @@ def test_pipeline_publishes_lexical_index_artifact(env):
     assert data["tokenizer_version"] == lexical_index.TOKENIZER_VERSION
     assert data["postings"]
 
-    manifest = json.loads((settings.global_dir / "current" / "generation-manifest.json").read_text(encoding="utf-8"))
+    manifest = json.loads(
+        (settings.global_dir / "current" / "generation-manifest.json").read_text(encoding="utf-8")
+    )
     assert manifest["lexical_index_tokenizer_version"] == lexical_index.TOKENIZER_VERSION

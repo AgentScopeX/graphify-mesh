@@ -1,23 +1,26 @@
 """Robustness/hardening contract: oversized stdin lines, crashing handlers,
 unexpected tool exceptions, and hostile tool arguments must all degrade
 gracefully — the serve loop and the server process always survive."""
+
 from __future__ import annotations
 
 import io
 import json
 from pathlib import Path
 
+import pytest
+from conftest import build_generation, fake_embed_query_fn, make_node, registry_repo, write_registry
+
 from graphify_mesh.server import protocol
 from graphify_mesh.server.config import ServerConfig
 from graphify_mesh.server.retrieval import lexical_candidates
 from graphify_mesh.server.server import MAX_K, MAX_TOKEN_BUDGET, GraphifyMeshServer
-from conftest import build_generation, fake_embed_query_fn, make_node, registry_repo, write_registry
-
-import pytest
 
 
 def _server(tmp_path: Path, cwd: Path) -> GraphifyMeshServer:
-    config = ServerConfig.from_env(mesh_root=tmp_path, registry_path=tmp_path / "bin" / "registry.json")
+    config = ServerConfig.from_env(
+        mesh_root=tmp_path, registry_path=tmp_path / "bin" / "registry.json"
+    )
     return GraphifyMeshServer(config, cwd=cwd, embed_query_fn=fake_embed_query_fn())
 
 
@@ -34,7 +37,9 @@ def _search_server(tmp_path, monkeypatch) -> GraphifyMeshServer:
     root = tmp_path / "acme"
     root.mkdir(parents=True)
     write_registry(tmp_path / "bin" / "registry.json", [registry_repo("acme.repo", root)])
-    generation = build_generation([make_node("acme.repo", "OrderService", "src/order.py", node_id="n1")])
+    generation = build_generation(
+        [make_node("acme.repo", "OrderService", "src/order.py", node_id="n1")]
+    )
     server = _server(tmp_path, root)
     monkeypatch.setattr(server, "_generation", lambda: generation)
     return server
@@ -77,8 +82,10 @@ def test_serve_survives_raising_handler_and_answers_requests_with_32603():
         return {"jsonrpc": "2.0", "id": message.get("id"), "result": {}}
 
     in_stream = io.StringIO(
-        json.dumps({"jsonrpc": "2.0", "id": 7, "method": "boom"}) + "\n"
-        + json.dumps({"jsonrpc": "2.0", "id": 8, "method": "ping"}) + "\n"
+        json.dumps({"jsonrpc": "2.0", "id": 7, "method": "boom"})
+        + "\n"
+        + json.dumps({"jsonrpc": "2.0", "id": 8, "method": "ping"})
+        + "\n"
     )
     out_stream = io.StringIO()
     protocol.serve(handler, in_stream, out_stream)
@@ -99,7 +106,9 @@ def test_serve_never_responds_to_raising_notification():
     def handler(message: dict):
         raise ValueError("boom")
 
-    in_stream = io.StringIO(json.dumps({"jsonrpc": "2.0", "method": "notifications/whatever"}) + "\n")
+    in_stream = io.StringIO(
+        json.dumps({"jsonrpc": "2.0", "method": "notifications/whatever"}) + "\n"
+    )
     out_stream = io.StringIO()
     protocol.serve(handler, in_stream, out_stream)
     assert out_stream.getvalue() == ""
@@ -143,7 +152,11 @@ def test_search_rejects_invalid_k_and_server_survives(tmp_path, monkeypatch, bad
 
     # Server survives: a subsequent valid call succeeds.
     ok = server.handle_message(
-        _rpc("tools/call", {"name": "search", "arguments": {"q": "OrderService", "k": 5}}, request_id=2)
+        _rpc(
+            "tools/call",
+            {"name": "search", "arguments": {"q": "OrderService", "k": 5}},
+            request_id=2,
+        )
     )
     assert ok["result"]["isError"] is False
 
@@ -165,7 +178,10 @@ def test_other_k_tools_reject_invalid_k(tmp_path, monkeypatch, tool):
 def test_context_pack_rejects_invalid_token_budget(tmp_path, monkeypatch, bad_budget):
     server = _search_server(tmp_path, monkeypatch)
     response = server.handle_message(
-        _rpc("tools/call", {"name": "context_pack", "arguments": {"goal": "g", "token_budget": bad_budget}})
+        _rpc(
+            "tools/call",
+            {"name": "context_pack", "arguments": {"goal": "g", "token_budget": bad_budget}},
+        )
     )
     result = response["result"]
     assert result["isError"] is True
@@ -175,7 +191,10 @@ def test_context_pack_rejects_invalid_token_budget(tmp_path, monkeypatch, bad_bu
 def test_context_pack_accepts_valid_token_budget(tmp_path, monkeypatch):
     server = _search_server(tmp_path, monkeypatch)
     response = server.handle_message(
-        _rpc("tools/call", {"name": "context_pack", "arguments": {"goal": "OrderService", "token_budget": 500}})
+        _rpc(
+            "tools/call",
+            {"name": "context_pack", "arguments": {"goal": "OrderService", "token_budget": 500}},
+        )
     )
     assert response["result"]["isError"] is False
 

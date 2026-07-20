@@ -20,7 +20,10 @@ def test_dangling_id_clean():
 
 
 def test_forbidden_edge_cross_repo_flag():
-    data = {"nodes": [{"id": "a"}, {"id": "b"}], "links": [{"source": "a", "target": "b", "cross_repo": True}]}
+    data = {
+        "nodes": [{"id": "a"}, {"id": "b"}],
+        "links": [{"source": "a", "target": "b", "cross_repo": True}],
+    }
     result = validate.validate_forbidden_edges(data)
     assert not result.ok
 
@@ -35,7 +38,10 @@ def test_forbidden_edge_relation_type():
 
 
 def test_forbidden_edge_clean():
-    data = {"nodes": [{"id": "a"}, {"id": "b"}], "links": [{"source": "a", "target": "b", "relation": "calls"}]}
+    data = {
+        "nodes": [{"id": "a"}, {"id": "b"}],
+        "links": [{"source": "a", "target": "b", "relation": "calls"}],
+    }
     result = validate.validate_forbidden_edges(data)
     assert result.ok
 

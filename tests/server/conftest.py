@@ -10,10 +10,9 @@ _BIN_DIR = Path(__file__).resolve().parents[2] / "src"
 if str(_BIN_DIR) not in sys.path:
     sys.path.insert(0, str(_BIN_DIR))
 
+from graphify_mesh.server.store import Generation  # noqa: E402
 from graphify_mesh.sync.embedding import node_key  # noqa: E402
 from graphify_mesh.sync.lexical_index import build_lexical_index  # noqa: E402
-
-from graphify_mesh.server.store import Generation  # noqa: E402
 
 
 def make_node(repo, label, source_file, node_id=None, line=1, community_name=None, **extra) -> dict:
@@ -73,7 +72,8 @@ def build_generation(
 def write_registry(path: Path, repos: list[dict], disabled: list[str] | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        json.dumps({"repos": repos, "disabled": disabled or [], "external_roots": []}), encoding="utf-8"
+        json.dumps({"repos": repos, "disabled": disabled or [], "external_roots": []}),
+        encoding="utf-8",
     )
 
 

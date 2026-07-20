@@ -1,6 +1,7 @@
 """Registry validation contract: repo_id is used as a filename downstream
 (embedding shards), so hostile/malformed registry content must fail loudly
 at load time, never surface as path traversal or silent last-wins merges."""
+
 from __future__ import annotations
 
 import json

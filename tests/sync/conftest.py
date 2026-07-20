@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import sys
 from pathlib import Path
@@ -92,7 +91,11 @@ class Env:
         recorded this test, in call order. See FAKE_GRAPHIFY_CALL_LOG."""
         if not self.call_log_path.exists():
             return []
-        return [json.loads(line) for line in self.call_log_path.read_text(encoding="utf-8").splitlines() if line]
+        return [
+            json.loads(line)
+            for line in self.call_log_path.read_text(encoding="utf-8").splitlines()
+            if line
+        ]
 
     def settings(self, **overrides):
         from graphify_mesh.sync.config import Settings

@@ -11,6 +11,7 @@ Exit code is always 0 on a successful scan (finding zero or many orphans
 is not a failure); a non-zero exit means the scan itself could not run
 (e.g. `ps` unavailable).
 """
+
 from __future__ import annotations
 
 import argparse
@@ -22,8 +23,14 @@ from graphify_mesh.sync.reaper import run_reaper
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--kill", action="store_true", help="Send SIGTERM to confirmed orphans (default: report only).")
-    parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON instead of a text table.")
+    parser.add_argument(
+        "--kill",
+        action="store_true",
+        help="Send SIGTERM to confirmed orphans (default: report only).",
+    )
+    parser.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON instead of a text table."
+    )
     return parser.parse_args(argv)
 
 

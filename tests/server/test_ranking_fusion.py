@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import pytest
+from conftest import build_generation, fake_embed_query_fn, key_for, make_link, make_node
 
 from graphify_mesh.server import ranking
 from graphify_mesh.server.retrieval import rank
-from conftest import build_generation, fake_embed_query_fn, key_for, make_link, make_node
 
 
 def test_rrf_pinned_constants_are_named_not_magic():
@@ -23,8 +23,12 @@ def test_fuse_rankings_sums_only_over_retrievers_that_returned_something():
 
 def test_exact_alias_bypass_ranked_first_and_skips_penalties():
     hub_node = make_node("repo.a", "TimeService", "src/TimeService.php", node_id="hub")
-    other_nodes = [make_node("repo.a", f"Neighbor{i}", f"src/n{i}.py", node_id=f"nb{i}") for i in range(60)]
-    links = [make_link("hub", n["id"]) for n in other_nodes]  # push hub degree above HUB_DEGREE_THRESHOLD
+    other_nodes = [
+        make_node("repo.a", f"Neighbor{i}", f"src/n{i}.py", node_id=f"nb{i}") for i in range(60)
+    ]
+    links = [
+        make_link("hub", n["id"]) for n in other_nodes
+    ]  # push hub degree above HUB_DEGREE_THRESHOLD
     gen = build_generation([hub_node] + other_nodes, links=links)
 
     result = rank("TimeService", gen, None, k=5, embed_query_fn=fake_embed_query_fn())
@@ -47,7 +51,10 @@ def test_apply_penalties_hub_degree_and_deprecated_are_multiplicative():
     degree_by_key = {"hub": 51, "low": 3, "both": 51}
     path_by_key = {"hub": "src/x.py", "low": "src/x.py", "both": "src/DEPRECATED/x.py"}
 
-    assert ranking.apply_penalties("hub", 1.0, degree_by_key, path_by_key) == ranking.HUB_PENALTY_FACTOR
+    assert (
+        ranking.apply_penalties("hub", 1.0, degree_by_key, path_by_key)
+        == ranking.HUB_PENALTY_FACTOR
+    )
     assert ranking.apply_penalties("low", 1.0, degree_by_key, path_by_key) == 1.0
     assert ranking.apply_penalties("both", 1.0, degree_by_key, path_by_key) == pytest.approx(
         ranking.HUB_PENALTY_FACTOR * ranking.DEPRECATED_PENALTY_FACTOR
@@ -63,8 +70,12 @@ def test_hub_degree_penalty_demotes_high_degree_node_vs_relevant_low_degree_one_
     pollution."""
     hub = make_node("repo.a", "CacheKeyThing", "src/hub.py", node_id="hub")
     low_degree = make_node("repo.a", "CacheKeyHandler", "src/low.py", node_id="low")
-    fillers = [make_node("repo.b", f"Filler{i}", f"src/f{i}.py", node_id=f"f{i}") for i in range(60)]
-    links = [make_link("hub", f["id"]) for f in fillers]  # hub's total degree = 60 > HUB_DEGREE_THRESHOLD(50)
+    fillers = [
+        make_node("repo.b", f"Filler{i}", f"src/f{i}.py", node_id=f"f{i}") for i in range(60)
+    ]
+    links = [
+        make_link("hub", f["id"]) for f in fillers
+    ]  # hub's total degree = 60 > HUB_DEGREE_THRESHOLD(50)
     gen = build_generation([hub, low_degree] + fillers, links=links)
 
     assert gen.degree("hub") > ranking.HUB_DEGREE_THRESHOLD
@@ -124,7 +135,9 @@ def test_degraded_mode_renormalizes_over_available_retrievers_when_vectors_missi
 
 
 def test_deterministic_tie_break_repeat_query_stability():
-    nodes = [make_node("repo.a", f"Widget{i}", f"src/widget{i}.py", node_id=f"w{i}") for i in range(5)]
+    nodes = [
+        make_node("repo.a", f"Widget{i}", f"src/widget{i}.py", node_id=f"w{i}") for i in range(5)
+    ]
     gen = build_generation(nodes)
 
     first = rank("widget", gen, None, k=5, embed_query_fn=fake_embed_query_fn())
@@ -145,7 +158,9 @@ def test_mmr_reduces_near_duplicate_flooding_from_same_source_file():
 
     result = rank("thing", gen, None, k=3, embed_query_fn=fake_embed_query_fn())
     files = [h.source_file for h in result.hits]
-    assert "src/elsewhere.py" in files, "MMR should diversify in at least one distinct-file candidate"
+    assert "src/elsewhere.py" in files, (
+        "MMR should diversify in at least one distinct-file candidate"
+    )
 
 
 def test_k_cap_never_exceeds_max_k():

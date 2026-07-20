@@ -30,6 +30,7 @@ lowercase+diacritic-stripping step reuses graphify's own exported
 `norm_label`-equivalent, `graphify.export._strip_diacritics`, rather than
 rewriting Unicode normalization here.
 """
+
 from __future__ import annotations
 
 import re
@@ -42,10 +43,14 @@ from graphify_mesh.sync.embedding import build_snippet, node_key
 try:
     from graphify.export import _strip_diacritics as _graphify_strip_diacritics
 except ImportError:  # pragma: no cover - defensive: graphify package shape changed upstream
+
     def _graphify_strip_diacritics(text: str | None) -> str:
         if not text:
             return ""
-        return "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
+        return "".join(
+            c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c)
+        )
+
 
 LEXICAL_INDEX_FILENAME = "lexical-index.json"
 
@@ -60,7 +65,11 @@ TOKENIZER_VERSION = "gm-lex-v1"
 FIELD_BOOST_LABEL = 3.0
 FIELD_BOOST_PATH = 1.5
 FIELD_BOOST_SNIPPET = 1.0
-FIELD_BOOSTS = {"label": FIELD_BOOST_LABEL, "path": FIELD_BOOST_PATH, "snippet": FIELD_BOOST_SNIPPET}
+FIELD_BOOSTS = {
+    "label": FIELD_BOOST_LABEL,
+    "path": FIELD_BOOST_PATH,
+    "snippet": FIELD_BOOST_SNIPPET,
+}
 
 # camelCase/PascalCase subtoken boundary: before an uppercase letter that
 # follows a lowercase letter/digit, or before the last uppercase letter of a
@@ -251,11 +260,15 @@ def build_lexical_index(
         "postings": sorted_postings,
         "doc_freq": {
             "global": dict(sorted(doc_freq_global.items())),
-            "per_repo": {rid: dict(sorted(df.items())) for rid, df in sorted(doc_freq_per_repo.items())},
+            "per_repo": {
+                rid: dict(sorted(df.items())) for rid, df in sorted(doc_freq_per_repo.items())
+            },
         },
         "alias_exact": sorted_aliases,
         "node_id_index": dict(sorted(node_id_index.items())),
         "document_count": documents,
     }
-    stats = LexicalIndexStats(documents=documents, terms=len(sorted_postings), aliases=len(sorted_aliases))
+    stats = LexicalIndexStats(
+        documents=documents, terms=len(sorted_postings), aliases=len(sorted_aliases)
+    )
     return LexicalIndexResult(data=data, stats=stats)

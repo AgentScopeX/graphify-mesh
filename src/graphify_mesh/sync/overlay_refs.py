@@ -9,6 +9,7 @@ single generation's resolution pass, to confirm a logical ref actually
 resolves to something real right now; they are never stored in the overlay
 artifact itself.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -22,13 +23,17 @@ class LogicalRef:
     signature: str | None = None
 
     def to_dict(self) -> dict:
-        payload = {"repo": self.repo, "source_file": self.source_file, "qualified_label": self.qualified_label}
+        payload = {
+            "repo": self.repo,
+            "source_file": self.source_file,
+            "qualified_label": self.qualified_label,
+        }
         if self.signature:
             payload["signature"] = self.signature
         return payload
 
     @classmethod
-    def from_dict(cls, data: dict) -> "LogicalRef":
+    def from_dict(cls, data: dict) -> LogicalRef:
         return cls(
             repo=data["repo"],
             source_file=data["source_file"],
@@ -65,7 +70,7 @@ class OverlayEdge:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> "OverlayEdge":
+    def from_dict(cls, data: dict) -> OverlayEdge:
         return cls(
             type=data["type"],
             source=LogicalRef.from_dict(data["source"]),
@@ -115,6 +120,7 @@ def require_resolved(ref: LogicalRef, graphs_by_repo: dict[str, dict], context: 
     if node is None:
         raise DanglingReferenceError(
             f"dangling reference in {context}: repo={ref.repo!r} source_file={ref.source_file!r} "
-            f"qualified_label={ref.qualified_label!r} does not resolve against the current generation"
+            f"qualified_label={ref.qualified_label!r} "
+            "does not resolve against the current generation"
         )
     return node

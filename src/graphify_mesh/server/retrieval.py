@@ -4,17 +4,17 @@ Scope filtering happens INSIDE each `*_candidates` function, before any
 ranking/scoring is computed — never as a post-filter of an already-ranked
 list (see `scope.py` module docstring for why that ordering matters).
 """
+
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable
-
-from graphify_mesh.sync.embed_similarity import cosine_similarity
-from graphify_mesh.sync.lexical_index import normalize_alias_query, tokenize_text
 
 from graphify_mesh.server import ranking
 from graphify_mesh.server.store import Generation
+from graphify_mesh.sync.embed_similarity import cosine_similarity
+from graphify_mesh.sync.lexical_index import normalize_alias_query, tokenize_text
 
 EmbedQueryFn = Callable[[str], list[float] | None]
 
@@ -48,13 +48,18 @@ def exact_alias_hits(query: str, lexical: dict, repo_filter: frozenset[str] | No
     norm = normalize_alias_query(query.strip())
     entries = lexical.get("alias_exact", {}).get(norm, [])
     keys = {
-        e["key"] for e in entries if isinstance(e, dict) and (repo_filter is None or e.get("repo") in repo_filter)
+        e["key"]
+        for e in entries
+        if isinstance(e, dict) and (repo_filter is None or e.get("repo") in repo_filter)
     }
     return sorted(keys)
 
 
 def lexical_candidates(
-    query: str, lexical: dict, repo_filter: frozenset[str] | None, depth: int = ranking.CANDIDATE_DEPTH_LEXICAL
+    query: str,
+    lexical: dict,
+    repo_filter: frozenset[str] | None,
+    depth: int = ranking.CANDIDATE_DEPTH_LEXICAL,
 ) -> list[str]:
     tokens = tokenize_text(query)
     if not tokens:
@@ -179,7 +184,9 @@ def rank(
     degraded: list[str] = list(generation.manifest.get("_runtime_degraded", []))
 
     exact_keys = exact_alias_hits(query, generation.lexical, repo_filter)
-    exact_hits = [h for h in (_hit_from_key(k_, generation, float("inf"), "exact") for k_ in exact_keys) if h]
+    exact_hits = [
+        h for h in (_hit_from_key(k_, generation, float("inf"), "exact") for k_ in exact_keys) if h
+    ]
     exact_hits.sort(key=lambda h: h.key)
     selected_keys = {h.key for h in exact_hits}
     remaining_slots = max(0, k - len(exact_hits))
@@ -198,7 +205,11 @@ def rank(
             seed_for_structural, generation, repo_filter, include_inferred=include_inferred
         )
 
-        rankings = {"lexical": lexical_ranked, "vector": vector_ranked, "structural": structural_ranked}
+        rankings = {
+            "lexical": lexical_ranked,
+            "vector": vector_ranked,
+            "structural": structural_ranked,
+        }
         fused_scores = ranking.fuse_rankings(rankings)
         for excluded in selected_keys:
             fused_scores.pop(excluded, None)
@@ -209,7 +220,9 @@ def rank(
             if key in generation.node_id_by_key
         }
         path_by_key = {
-            key: generation.node_by_id.get(generation.node_id_by_key.get(key, ""), {}).get("source_file", "")
+            key: generation.node_by_id.get(generation.node_id_by_key.get(key, ""), {}).get(
+                "source_file", ""
+            )
             for key in fused_scores
             if key in generation.node_id_by_key
         }
