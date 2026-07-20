@@ -65,9 +65,22 @@ WATCHED_PATTERNS = (
 # still-active owner of the child. Matched against the PARENT's `args`
 # (full cmdline), not just `comm` (which `ps` truncates to 15 chars and
 # would mangle e.g. the versioned `claude` binary name).
+#
+# Applied with `pattern.search(args)`, so every pattern must anchor its own
+# token boundaries: a bare substring like r"claude" would match ANY command
+# line containing "claude" (e.g. "my-claude-tool --x"), letting an attacker
+# or an unlucky naming choice shield a leaked process from the reaper.
+#   * (^|/)   — token starts at the beginning of the cmdline or after a path
+#               separator, never mid-word ("my-claude-tool" does not match).
+#   * shells: (\s|$) after the name — a live shell may carry args
+#             ("/bin/bash", "bash -lc ...") but "bashful" does not match.
+#   * claude: (/|\s|$) after the name — additionally allows "claude" as a
+#             path COMPONENT, because the real Claude Code binary runs as
+#             ".../share/claude/versions/<ver> --session-id ..." where
+#             "claude" is a directory in the path, not the final token.
 LIVE_PARENT_PATTERNS = (
-    re.compile(r"(^|/)(bash|zsh|sh|dash|fish)$"),
-    re.compile(r"claude"),
+    re.compile(r"(^|/)(bash|zsh|sh|dash|fish)(\s|$)"),
+    re.compile(r"(^|/)claude(/|\s|$)"),
 )
 
 

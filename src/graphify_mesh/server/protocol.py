@@ -15,8 +15,18 @@ moment the client closes its end of the pipe.
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from typing import Callable, Iterator, Optional
+
+log = logging.getLogger("graphify_mesh.server.protocol")
+
+# Hard per-message size cap for the stdio transport. Without a bound,
+# `stream.readline()`/`for line in stream` buffers an entire line in memory —
+# a single giant (or newline-less) line from a misbehaving client OOMs the
+# process. 10 MB is far above any legitimate JSON-RPC message this server
+# handles; longer lines are drained and skipped, never buffered whole.
+MAX_LINE_BYTES = 10 * 1024 * 1024
 
 # `handler(message) -> response-dict | None`. `None` means "this message was
 # a JSON-RPC notification (no `id`), so JSON-RPC 2.0 forbids a response" —
@@ -24,9 +34,29 @@ from typing import Callable, Iterator, Optional
 JsonRpcHandler = Callable[[dict], Optional[dict]]
 
 
+def _drain_line(stream) -> None:
+    """Consume (and discard) the remainder of an oversized line in bounded
+    chunks, stopping at the next newline or EOF. Never accumulates the data."""
+    while True:
+        chunk = stream.readline(MAX_LINE_BYTES + 1)
+        if not chunk:
+            return
+        if chunk.endswith("\n"):
+            return
+
+
 def read_messages(stream=None) -> Iterator[dict]:
     stream = stream if stream is not None else sys.stdin
-    for raw_line in stream:
+    while True:
+        raw_line = stream.readline(MAX_LINE_BYTES + 1)
+        if not raw_line:
+            return  # EOF: clean exit (WS6 contract)
+        if len(raw_line) > MAX_LINE_BYTES and not raw_line.endswith("\n"):
+            # Oversized line: drain the rest without buffering it, skip the
+            # message, keep serving subsequent messages.
+            _drain_line(stream)
+            log.warning("dropped oversized stdin line (> %d bytes)", MAX_LINE_BYTES)
+            continue
         line = raw_line.strip()
         if not line:
             continue
@@ -57,6 +87,15 @@ def serve(handler: JsonRpcHandler, in_stream=None, out_stream=None) -> None:
     `in_stream` hits EOF — the only clean-exit contract this transport
     needs (WS6)."""
     for message in read_messages(in_stream):
-        response = handler(message)
+        try:
+            response = handler(message)
+        except Exception:
+            # Full traceback goes to stderr only; the client gets a generic
+            # JSON-RPC internal error — never exception text, paths, or
+            # stack frames. Notifications (no "id") get no response at all.
+            log.exception("handler raised while processing message")
+            if "id" in message:
+                write_message(error_response(message.get("id"), -32603, "internal error"), out_stream)
+            continue
         if response is not None:
             write_message(response, out_stream)

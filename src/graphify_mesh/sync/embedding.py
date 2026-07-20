@@ -60,6 +60,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import shutil
 import urllib.error
@@ -68,13 +69,20 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from graphify_mesh.sync.config import Settings
+from graphify_mesh.sync.config import Settings, is_valid_http_base_url
 from graphify_mesh.sync.overlay_refs import LogicalRef
+from graphify_mesh.sync.publish import _fsync_dir
 
 log = logging.getLogger("graphify_mesh.sync.embedding")
 
 EMBED_HEALTHY = "ok"
 EMBED_DEGRADED = "degraded"
+# Health check passed (server was up), but a real embed_batch call failed
+# mid-run (network blip, host went down partway through, etc). Distinct from
+# EMBED_DEGRADED (never even attempted this run) so the generation manifest
+# is honest about "some new vectors landed, then it degraded" vs "skipped
+# entirely" — both are recoverable next run, but they're not the same event.
+EMBED_PARTIAL = "partial"
 
 # C6 snippet window: bounded read around the node's line (if known), or the
 # file's head if no line is available. Kept small and fixed rather than
@@ -157,7 +165,7 @@ class EmbeddingStats:
 
 @dataclass
 class EmbeddingStageResult:
-    status: str  # EMBED_HEALTHY | EMBED_DEGRADED
+    status: str  # EMBED_HEALTHY | EMBED_DEGRADED | EMBED_PARTIAL
     vectors_by_repo: dict[str, dict[str, list[float]]] = field(default_factory=dict)
     # Full shard entries (content_hash + embedding, including trivial-skip
     # `{"embedding": None}` markers) per repo — this is what actually gets
@@ -196,11 +204,20 @@ def _content_hash(text: str) -> str:
 
 def build_snippet(source_root: Path | None, source_file: str | None, line: int | None) -> str:
     """C6 bounded source snippet. Returns "" (not an error) whenever a
-    snippet cannot be produced — missing root, missing file, unreadable file
-    — embedding still proceeds with label/path/community alone."""
+    snippet cannot be produced — missing root, missing file, unreadable file,
+    or a `source_file` that escapes `source_root` (absolute path or `..`
+    traversal; graph.json content is treated as hostile input, per the
+    public-package threat model) — embedding still proceeds with
+    label/path/community alone."""
     if source_root is None or not source_file:
         return ""
-    path = source_root / source_file
+    if Path(source_file).is_absolute():
+        return ""
+    path = (source_root / source_file).resolve()
+    try:
+        path.relative_to(source_root.resolve())
+    except ValueError:
+        return ""
     if not path.is_file():
         return ""
 
@@ -397,10 +414,20 @@ def build_id_map(previous_id_map: dict[str, dict], current_keys: set[str], gener
     return new_map
 
 
+def _shard_filename(repo_id: str) -> str:
+    """repo_id is validated at registry load (registry.REPO_ID_PATTERN), but
+    shard paths are built from it in several places — keep a defense-in-depth
+    check right where the filename is formed so a future caller with an
+    unvalidated repo_id can never traverse out of the shard dir."""
+    if "/" in repo_id or "\\" in repo_id or repo_id in ("", ".", "..") or repo_id.startswith("."):
+        raise ValueError(f"unsafe repo_id for shard filename: {repo_id!r}")
+    return f"{repo_id}.json"
+
+
 def read_previous_shard(embeddings_current_dir: Path | None, repo_id: str) -> dict[str, dict]:
     if embeddings_current_dir is None or not embeddings_current_dir.is_dir():
         return {}
-    shard_path = embeddings_current_dir / f"{repo_id}.json"
+    shard_path = embeddings_current_dir / _shard_filename(repo_id)
     if not shard_path.is_file():
         return {}
     try:
@@ -439,17 +466,30 @@ def run_embedding_stage(
     id-map's "tombstoned_at"/"generation_id" bookkeeping while staging;
     nothing durable is written until `persist_generation` is called after a
     successful publish (see module docstring)."""
-    check = health_check if health_check is not None else default_embed_health_check
-    healthy = check(settings.ollama_embed_base_url, settings.ollama_embed_health_timeout)
+    # URL scheme gate BEFORE any health check runs: a base URL that is not
+    # plain http(s)-with-host (file://, gopher://, ...) fails this stage's
+    # health-check path outright — degraded mode, zero requests attempted.
+    degrade_reason = ""
+    if not is_valid_http_base_url(settings.ollama_embed_base_url):
+        degrade_reason = (
+            f"invalid embed base URL {settings.ollama_embed_base_url!r}: "
+            "scheme must be http or https with a non-empty host"
+        )
+    if not degrade_reason:
+        check = health_check if health_check is not None else default_embed_health_check
+        healthy = check(settings.ollama_embed_base_url, settings.ollama_embed_health_timeout)
+        if not healthy:
+            degrade_reason = "embed health check failed"
 
     previous_current_dir = settings.embeddings_current_symlink if settings.embeddings_current_symlink.exists() else None
     previous_id_map = read_previous_id_map(previous_current_dir)
 
-    if not healthy:
+    if degrade_reason:
         log.warning(
-            "embed service unhealthy at %s — skipping embed-changed entirely (degraded mode); "
+            "embed service unusable at %s (%s) — skipping embed-changed entirely (degraded mode); "
             "similar_approach falls back to the exact-match scorer this generation",
             settings.ollama_embed_base_url,
+            degrade_reason,
         )
         # Degraded: carry forward whatever was last published, verbatim, so a
         # transient outage doesn't erase the whole index; nodes added since
@@ -464,7 +504,7 @@ def run_embedding_stage(
             status=EMBED_DEGRADED,
             vectors_by_repo=vectors_by_repo,
             shards_by_repo=shards_by_repo,
-            reason="embed health check failed",
+            reason=degrade_reason,
             id_map=previous_id_map,
         )
 
@@ -472,9 +512,11 @@ def run_embedding_stage(
     vectors_by_repo = {}
     all_keys: set[str] = set()
     staged_shards: dict[str, dict] = {}
+    mid_run_failure: str | None = None
 
     total_repos = len(graphs_by_repo)
-    for i, (repo_id, graph_data) in enumerate(graphs_by_repo.items(), start=1):
+    repo_items = list(graphs_by_repo.items())
+    for i, (repo_id, graph_data) in enumerate(repo_items, start=1):
         source_root = repo_roots_by_id.get(repo_id)
         previous_shard = read_previous_shard(previous_current_dir, repo_id)
 
@@ -488,15 +530,42 @@ def run_embedding_stage(
             stats.reused_repos_unchanged += 1
         else:
             log.info("[%d/%d] %s: computing shard ...", i, total_repos, repo_id)
-            shard = compute_repo_shard(
-                repo_id,
-                graph_data,
-                source_root,
-                previous_shard,
-                settings.ollama_embed_base_url,
-                settings.ollama_embed_model,
-                stats,
-            )
+            try:
+                shard = compute_repo_shard(
+                    repo_id,
+                    graph_data,
+                    source_root,
+                    previous_shard,
+                    settings.ollama_embed_base_url,
+                    settings.ollama_embed_model,
+                    stats,
+                )
+            except RuntimeError as exc:
+                # A real embed_batch call failed AFTER the pre-flight health
+                # check passed — a mid-run network blip, the host going down
+                # partway through, etc. This must NOT crash the whole
+                # pipeline and lose already-completed repos' real vectors
+                # (or the naming stage's result, which already ran and
+                # succeeded by this point) — fall back to this repo's
+                # previous shard and every repo after it, keep what's
+                # already staged, and report the run as PARTIAL rather than
+                # letting the exception propagate out of the pipeline.
+                log.warning(
+                    "%s: embed_batch failed mid-run (%s) — falling back to previous shard for "
+                    "this repo and all %d remaining repo(s); already-embedded repos this run are kept",
+                    repo_id,
+                    exc,
+                    total_repos - i,
+                )
+                mid_run_failure = f"{repo_id}: {exc}"
+                for fallback_repo_id, _ in repo_items[i - 1 :]:
+                    fallback_shard = read_previous_shard(previous_current_dir, fallback_repo_id)
+                    staged_shards[fallback_repo_id] = fallback_shard
+                    all_keys.update(fallback_shard.keys())
+                    vectors_by_repo[fallback_repo_id] = {
+                        k: v["embedding"] for k, v in fallback_shard.items() if v.get("embedding")
+                    }
+                break
 
         staged_shards[repo_id] = shard
         all_keys.update(shard.keys())
@@ -508,12 +577,13 @@ def run_embedding_stage(
     recipe = EmbeddingRecipe(model=settings.ollama_embed_model, dim=_infer_dim(vectors_by_repo))
 
     return EmbeddingStageResult(
-        status=EMBED_HEALTHY,
+        status=EMBED_PARTIAL if mid_run_failure else EMBED_HEALTHY,
         vectors_by_repo=vectors_by_repo,
         shards_by_repo=staged_shards,
         stats=stats,
         recipe=recipe,
         id_map=id_map,
+        reason=mid_run_failure or "",
     )
 
 
@@ -534,7 +604,7 @@ def stage_embeddings(staging_root: Path, staged_shards_source: dict[str, dict], 
     out_dir = staging_root / "embeddings"
     out_dir.mkdir(parents=True, exist_ok=True)
     for repo_id, entries in staged_shards_source.items():
-        shard_path = out_dir / f"{repo_id}.json"
+        shard_path = out_dir / _shard_filename(repo_id)
         shard_path.write_text(json.dumps({"repo_id": repo_id, "entries": entries}), encoding="utf-8")
     (out_dir / "id-map.json").write_text(json.dumps(id_map, indent=2, sort_keys=True), encoding="utf-8")
     return out_dir
@@ -558,9 +628,10 @@ def persist_generation(embeddings_dir: Path, generation_id: str, staged_dir: Pat
     if tmp_link.exists() or tmp_link.is_symlink():
         tmp_link.unlink()
     tmp_link.symlink_to(gen_dir.resolve(), target_is_directory=True)
-    import os
-
     os.rename(str(tmp_link), str(current))
+    # Same durability rule as publish.flip_current: without the dir fsync a
+    # crash right after rename can leave the flip unwritten on disk.
+    _fsync_dir(embeddings_dir)
 
     gc_old_generations(generations_dir, keep)
 

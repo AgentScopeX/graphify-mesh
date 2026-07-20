@@ -72,6 +72,45 @@ def test_parent_is_live_shell_is_never_flagged():
     assert candidates == []
 
 
+def test_parent_named_like_claude_but_not_claude_is_flagged_orphan():
+    """Anchoring regression test: a parent whose cmdline merely CONTAINS the
+    substring "claude" (e.g. "my-claude-tool --x") is NOT a live Claude Code
+    session and must not shield its children from the reaper."""
+    rows = [
+        ProcRow(pid=20, ppid=1, args="my-claude-tool --x"),
+        ProcRow(pid=21, ppid=20, args="python -m graphify.serve /home/x/global-graph.json"),
+    ]
+    candidates = find_orphan_candidates(rows)
+    assert len(candidates) == 1
+    assert candidates[0].pid == 21
+
+
+def test_parent_claude_binary_path_is_live():
+    rows = [
+        ProcRow(pid=30, ppid=1, args="/usr/local/bin/claude --resume"),
+        ProcRow(pid=31, ppid=30, args="python -m graphify.serve /home/x/global-graph.json"),
+    ]
+    assert find_orphan_candidates(rows) == []
+
+
+def test_parent_bare_claude_command_is_live():
+    rows = [
+        ProcRow(pid=40, ppid=1, args="claude"),
+        ProcRow(pid=41, ppid=40, args="python -m graphify.serve /home/x/global-graph.json"),
+    ]
+    assert find_orphan_candidates(rows) == []
+
+
+def test_parent_shell_with_arguments_is_live():
+    """Shell-pattern anchoring: a live shell often carries arguments
+    ("bash -lc ..."); the old end-of-string anchor rejected those."""
+    rows = [
+        ProcRow(pid=60, ppid=1, args="/bin/bash -lc some-command"),
+        ProcRow(pid=61, ppid=60, args="python -m graphify.serve /home/x/global-graph.json"),
+    ]
+    assert find_orphan_candidates(rows) == []
+
+
 def test_parent_exists_but_is_not_shell_or_claude_is_flagged_orphan():
     rows = [
         ProcRow(pid=10, ppid=1, args="/usr/lib/systemd/systemd --user"),

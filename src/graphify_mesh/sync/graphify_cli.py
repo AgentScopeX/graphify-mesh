@@ -48,8 +48,26 @@ class CliResult:
         return self.returncode == 0
 
 
+def resolve_bin_argv(graphify_bin: str) -> list[str]:
+    """The ONE canonical GRAPHIFY_BIN -> argv-head resolution, shared by every
+    call site (this module and backend.py's interpreter probe) so paths
+    containing spaces can't be split three different ways.
+
+    If the raw value names an existing file (covers absolute paths containing
+    spaces, e.g. `/opt/my tools/graphify`), it is used verbatim as a single
+    argv element; otherwise it is shlex-split so multi-word values like
+    "python -m graphify" keep working.
+    """
+    raw = graphify_bin.strip()
+    if not raw:
+        return []
+    if Path(raw).is_file():
+        return [raw]
+    return shlex.split(raw)
+
+
 def _base_argv(graphify_bin: str) -> list[str]:
-    return shlex.split(graphify_bin)
+    return resolve_bin_argv(graphify_bin)
 
 
 def _run(argv: list[str], cwd: Path | None, env: dict | None, timeout: int = 900) -> CliResult:

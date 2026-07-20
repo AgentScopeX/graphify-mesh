@@ -127,6 +127,13 @@ def _read_json(path: Path) -> dict | None:
         return None
 
 
+# Per-shard byte ceiling for the read side. Shards are produced by our own
+# sync pipeline, but the server must not OOM on a corrupt or hand-edited
+# shard file — skipping one repo's vectors is the documented degraded mode
+# (vector channel drops out, lexical/structural still serve).
+MAX_SHARD_BYTES = 256 * 1024 * 1024
+
+
 def _load_embeddings(embeddings_current: Path) -> dict[str, dict[str, list[float]]]:
     if not embeddings_current.is_dir():
         return {}
@@ -134,12 +141,23 @@ def _load_embeddings(embeddings_current: Path) -> dict[str, dict[str, list[float
     for shard_path in sorted(embeddings_current.glob("*.json")):
         if shard_path.name == "id-map.json":
             continue
+        try:
+            if shard_path.stat().st_size > MAX_SHARD_BYTES:
+                continue
+        except OSError:
+            continue
         data = _read_json(shard_path)
-        if not data:
+        if not isinstance(data, dict):
             continue
         repo_id = data.get("repo_id", shard_path.stem)
         entries = data.get("entries", {})
-        out[repo_id] = {k: v["embedding"] for k, v in entries.items() if v.get("embedding")}
+        if not isinstance(entries, dict):
+            continue
+        out[repo_id] = {
+            k: v["embedding"]
+            for k, v in entries.items()
+            if isinstance(v, dict) and v.get("embedding")
+        }
     return out
 
 

@@ -37,13 +37,24 @@ def _fsync_dir(path: Path) -> None:
         os.close(fd)
 
 
+def _write_json_atomic(path: Path, data: dict, **dumps_kwargs) -> None:
+    """Write via tmp-file + rename so an interrupted write can never leave a
+    truncated .json in a generation dir. `current` is only flipped after all
+    writes, so a partial file was never *served* — but a stranded generation
+    dir with half a graph in it is a trap for the manual-rollback procedure
+    (ROLLBACK.md points operators at old generation dirs directly)."""
+    tmp_path = path.with_name(path.name + ".tmp")
+    tmp_path.write_text(json.dumps(data, **dumps_kwargs), encoding="utf-8")
+    os.rename(str(tmp_path), str(path))
+
+
 def write_generation(generations_dir: Path, generation_id: str, graph_data: dict, manifest: dict) -> Path:
     gen_dir = generations_dir / generation_id
     gen_dir.mkdir(parents=True, exist_ok=False)
     graph_path = gen_dir / "global-graph.json"
     manifest_path = gen_dir / "generation-manifest.json"
-    graph_path.write_text(json.dumps(graph_data, indent=2), encoding="utf-8")
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    _write_json_atomic(graph_path, graph_data, indent=2)
+    _write_json_atomic(manifest_path, manifest, indent=2, sort_keys=True)
     _fsync_dir(gen_dir)
     _fsync_dir(generations_dir)
     return gen_dir
@@ -55,7 +66,7 @@ def write_overlay(gen_dir: Path, overlay_data: dict) -> Path:
     flips atomically with everything else on `flip_current` — but as an
     entirely separate file, never merged into `global-graph.json` (C5)."""
     overlay_path = gen_dir / "cross-project-overlay.json"
-    overlay_path.write_text(json.dumps(overlay_data, indent=2, sort_keys=True), encoding="utf-8")
+    _write_json_atomic(overlay_path, overlay_data, indent=2, sort_keys=True)
     _fsync_dir(gen_dir)
     return overlay_path
 
@@ -67,7 +78,7 @@ def write_lexical_index(gen_dir: Path, lexical_data: dict) -> Path:
     read-only by the graphify-mesh companion MCP server, never written to at
     query time."""
     lexical_path = gen_dir / "lexical-index.json"
-    lexical_path.write_text(json.dumps(lexical_data, indent=2, sort_keys=True), encoding="utf-8")
+    _write_json_atomic(lexical_path, lexical_data, indent=2, sort_keys=True)
     _fsync_dir(gen_dir)
     return lexical_path
 

@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from graphify_mesh.sync.config import PINNED_CLUSTERING_BACKEND
+from graphify_mesh.sync.graphify_cli import resolve_bin_argv
 
 LEIDEN_BACKEND = "leiden"
 LOUVAIN_BACKEND = "louvain"
@@ -55,7 +56,8 @@ def _resolve_interpreter(graphify_bin: str) -> str:
     fake_graphify stub (`#!/usr/bin/env python3`). Falls back to
     `sys.executable` if no shebang can be read.
     """
-    argv0 = graphify_bin.strip().split()[0] if graphify_bin.strip() else graphify_bin
+    bin_argv = resolve_bin_argv(graphify_bin)
+    argv0 = bin_argv[0] if bin_argv else graphify_bin
     candidate = Path(argv0)
     if not candidate.is_absolute() or not candidate.exists():
         resolved = shutil.which(argv0)
@@ -79,7 +81,7 @@ def detect_actual_backend(graphify_bin: str, timeout: int = 15) -> str:
     LEIDEN_BACKEND or LOUVAIN_BACKEND — never raises for a "louvain" result,
     only for a probe/exec failure."""
     interpreter = _resolve_interpreter(graphify_bin)
-    argv = interpreter.split() + ["-c", _PROBE_CODE]
+    argv = resolve_bin_argv(interpreter) + ["-c", _PROBE_CODE]
     try:
         proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired) as exc:

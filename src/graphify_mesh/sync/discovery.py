@@ -58,6 +58,36 @@ def _is_under(path: Path, root: Path) -> bool:
         return False
 
 
+def assert_registry_containment(registry: Registry, approved_root: Path) -> None:
+    """C16 companion guard for registry-declared paths.
+
+    Discovered graphify-out symlink targets are already resolved and
+    prefix-checked against the approved root (see `discover_filesystem`), but
+    `collection_path` values coming straight from the registry were used by
+    the pipeline unchecked — a registry entry could route the pipeline outside
+    the approved tree without ever passing the discovery guard. This applies
+    the exact same resolve-then-`_is_under` comparison so the two guards can
+    never disagree: every *enabled* entry's resolved collection_path must land
+    under approved_root or one of the registry's external_roots, else hard
+    error naming the repo_id.
+    """
+    approved = approved_root.resolve()
+    allowed_roots = [approved] + [Path(root).resolve() for root in registry.external_roots]
+    for entry in registry.repos:
+        if not entry.enabled:
+            continue
+        if entry.repo_id in registry.disabled:
+            continue
+        resolved = entry.collection_path.resolve()
+        if any(_is_under(resolved, root) for root in allowed_roots):
+            continue
+        raise ValueError(
+            f"registry repo {entry.repo_id!r}: collection_path {str(entry.collection_path)!r} "
+            f"resolves to {str(resolved)!r}, outside approved root {str(approved)!r} "
+            f"and registry external_roots"
+        )
+
+
 def discover_filesystem(scan_root: Path, approved_root: Path) -> list[DiscoveredLink]:
     """Scan for `graphify-out` symlinks/dirs at depth 1 and depth 2 under scan_root."""
     scan_root = scan_root.resolve()

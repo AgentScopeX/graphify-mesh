@@ -7,8 +7,56 @@ typical single-host deployment; override them for your environment.
 from __future__ import annotations
 
 import os
+import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
+
+# Upper bound for the *_HEALTH_TIMEOUT env overrides: a health check is a
+# cheap liveness probe, anything above this is certainly a typo (and would
+# just turn a down service into a multi-minute pipeline hang).
+HEALTH_TIMEOUT_MAX_SECONDS = 300.0
+
+# Only plain HTTP(S) endpoints are ever legitimate LLM/embed base URLs; the
+# package is published publicly so file://, gopher:// etc. must never reach
+# urllib (SSRF/local-file-read surface).
+ALLOWED_BASE_URL_SCHEMES = frozenset({"http", "https"})
+
+
+def is_valid_http_base_url(url: str) -> bool:
+    """True iff `url` parses with an http/https scheme and a non-empty host.
+
+    Used by the WS2 naming stage and WS3 embed stage to gate their health
+    checks: an invalid base URL fails the health-check path (documented
+    degrade-gracefully behavior) without any request ever being attempted.
+    """
+    try:
+        parsed = urllib.parse.urlsplit(url)
+    except ValueError:
+        return False
+    if parsed.scheme not in ALLOWED_BASE_URL_SCHEMES:
+        return False
+    return bool(parsed.hostname)
+
+
+def _health_timeout_from_env(var_name: str, default: float) -> float:
+    """Parse a *_HEALTH_TIMEOUT env override. Must be a number, > 0 and
+    <= HEALTH_TIMEOUT_MAX_SECONDS; anything else raises ValueError naming the
+    env var — failing fast at startup with a clear message beats a hang (or a
+    bare float() traceback) mid-pipeline."""
+    raw = os.environ.get(var_name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{var_name} must be a number of seconds, got {raw!r}") from exc
+    if not value > 0:
+        raise ValueError(f"{var_name} must be > 0 seconds, got {raw!r}")
+    if value > HEALTH_TIMEOUT_MAX_SECONDS:
+        raise ValueError(
+            f"{var_name} must be <= {HEALTH_TIMEOUT_MAX_SECONDS} seconds, got {raw!r}"
+        )
+    return value
 
 # C19: never re-litigate — see graphify_mesh.sync/__init__.py docstring for the
 # full evidence citation of why `merge-graphs` (stateless) is used instead of
@@ -140,8 +188,8 @@ class Settings:
         default_factory=lambda: os.environ.get("GRAPHIFY_MESH_OLLAMA_MODEL", OLLAMA_DEFAULT_MODEL)
     )
     ollama_health_timeout: float = field(
-        default_factory=lambda: float(
-            os.environ.get("GRAPHIFY_MESH_OLLAMA_HEALTH_TIMEOUT", OLLAMA_DEFAULT_HEALTH_TIMEOUT)
+        default_factory=lambda: _health_timeout_from_env(
+            "GRAPHIFY_MESH_OLLAMA_HEALTH_TIMEOUT", OLLAMA_DEFAULT_HEALTH_TIMEOUT
         )
     )
     # Test-only dependency injection: a `(base_url, api_key, timeout) -> bool`
@@ -159,8 +207,8 @@ class Settings:
         default_factory=lambda: os.environ.get("GRAPHIFY_MESH_OLLAMA_EMBED_MODEL", EMBED_DEFAULT_MODEL)
     )
     ollama_embed_health_timeout: float = field(
-        default_factory=lambda: float(
-            os.environ.get("GRAPHIFY_MESH_OLLAMA_EMBED_HEALTH_TIMEOUT", EMBED_DEFAULT_HEALTH_TIMEOUT)
+        default_factory=lambda: _health_timeout_from_env(
+            "GRAPHIFY_MESH_OLLAMA_EMBED_HEALTH_TIMEOUT", EMBED_DEFAULT_HEALTH_TIMEOUT
         )
     )
     # Test-only dependency injection, mirrors ollama_health_check above but

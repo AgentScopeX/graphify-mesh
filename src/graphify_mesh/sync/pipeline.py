@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import shutil
 import tempfile
 import time
 from dataclasses import asdict, dataclass, field
@@ -34,7 +35,7 @@ from graphify_mesh.sync.config import (
     SEMANTIC_EXTENSIONS,
     Settings,
 )
-from graphify_mesh.sync.discovery import discover_filesystem, reconcile
+from graphify_mesh.sync.discovery import assert_registry_containment, discover_filesystem, reconcile
 from graphify_mesh.sync.locking import transaction_lock
 from graphify_mesh.sync.registry import Registry, load_registry, registry_hash
 from graphify_mesh.sync.state import compute_source_manifest, file_content_hash, load_state, save_state
@@ -118,14 +119,25 @@ def run(settings: Settings) -> RunReport:
         settings.global_dir.mkdir(parents=True, exist_ok=True)
         lock_path = settings.lock_path
 
-    with transaction_lock(lock_path):
-        return _run_locked(settings, staging_root)
+    try:
+        with transaction_lock(lock_path):
+            return _run_locked(settings, staging_root)
+    finally:
+        # Staging is per-run scratch (mkdtemp above). Without this, every run
+        # — success, blocked publish, or crash — leaks a tempdir; anything
+        # durable was already copied out by publish/persist_generation.
+        shutil.rmtree(staging_root, ignore_errors=True)
 
 
 def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
     log.info("discovery: scanning %s ...", settings.scan_root)
     discovered = discover_filesystem(settings.scan_root, settings.approved_root)
     registry = load_registry(settings.registry_path)
+    # Hard error (never a degrade) if any enabled registry entry's
+    # collection_path escapes the approved root — same containment rule the
+    # discovery symlink guard enforces, applied at the point where
+    # approved_root is known.
+    assert_registry_containment(registry, settings.approved_root)
     reconciliation = reconcile(discovered, registry, settings.mesh_root)
     report = RunReport(dry_run=settings.dry_run, reconciliation=reconciliation.to_dict())
     log.info(

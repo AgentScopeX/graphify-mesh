@@ -125,3 +125,41 @@ def test_hot_reload_picks_up_new_valid_generation(tmp_path):
     _write_generation(config.global_dir, "gen-2", [{"id": "n2", "repo": "repo.a", "label": "Beta", "source_file": "b.py"}])
     assert store.generation.generation_id == "gen-2"
     assert "n2" in store.generation.node_by_id
+
+
+# --- _load_embeddings: corrupt/oversized shard tolerance ---------------------
+
+
+def test_load_embeddings_skips_oversized_shard(tmp_path, monkeypatch):
+    from graphify_mesh.server import store
+
+    (tmp_path / "big.json").write_text(
+        json.dumps({"repo_id": "big.repo", "entries": {"k": {"embedding": [1.0]}}}),
+        encoding="utf-8",
+    )
+    (tmp_path / "ok.json").write_text(
+        json.dumps({"repo_id": "ok.repo", "entries": {"k": {"embedding": [2.0]}}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(store, "MAX_SHARD_BYTES", (tmp_path / "ok.json").stat().st_size)
+
+    out = store._load_embeddings(tmp_path)
+    assert "ok.repo" in out
+    assert "big.repo" not in out
+
+
+def test_load_embeddings_tolerates_malformed_shards(tmp_path):
+    from graphify_mesh.server.store import _load_embeddings
+
+    (tmp_path / "not-dict.json").write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+    (tmp_path / "entries-not-dict.json").write_text(
+        json.dumps({"repo_id": "bad.repo", "entries": "oops"}), encoding="utf-8"
+    )
+    (tmp_path / "entry-not-dict.json").write_text(
+        json.dumps({"repo_id": "half.repo", "entries": {"a": "oops", "b": {"embedding": [1.0]}}}),
+        encoding="utf-8",
+    )
+
+    out = _load_embeddings(tmp_path)
+    assert "bad.repo" not in out
+    assert out["half.repo"] == {"b": [1.0]}

@@ -73,7 +73,10 @@ def lexical_candidates(
                 continue
             if repo_filter is not None and entry.get("repo") not in repo_filter:
                 continue
-            key = entry["key"]
+            key = entry.get("key")
+            if key is None:
+                # Malformed index entry: tolerate and skip, never crash.
+                continue
             weight = entry.get("weight", 1.0)
             scores[key] = scores.get(key, 0.0) + weight * idf
 

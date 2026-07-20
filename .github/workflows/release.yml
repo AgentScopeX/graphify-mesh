@@ -12,10 +12,10 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
 
@@ -34,7 +34,7 @@ jobs:
           python -m build
 
       - name: Create GitHub Release with artifacts
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: |
             dist/*.tar.gz
@@ -56,7 +56,7 @@ jobs:
 
       - name: Check out gh-pages
         if: steps.gh-pages-check.outputs.exists == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: gh-pages
           path: pages
@@ -86,9 +86,18 @@ jobs:
           proj_index = proj_dir / "index.html"
 
           # Collect existing links (previous releases) plus this release's files.
+          # Only carry forward links pointing at this repo's own GitHub release
+          # downloads — anything else in the old index (stale, tampered, or
+          # foreign hrefs) is dropped instead of being preserved forever.
+          trusted_prefix = f"https://github.com/{repo}/releases/download/"
           links: set[str] = set()
+          dropped = 0
           if proj_index.exists():
-              links.update(re.findall(r'href="([^"]+)"', proj_index.read_text(encoding="utf-8")))
+              for href in re.findall(r'href="([^"]+)"', proj_index.read_text(encoding="utf-8")):
+                  if not href.startswith(trusted_prefix):
+                      dropped += 1
+                      continue
+                  links.add(href)
           for dist in sorted(Path("dist").glob("*")):
               if dist.suffix in {".whl"} or dist.name.endswith(".tar.gz"):
                   links.add(f"{base}/{dist.name}")
@@ -116,7 +125,10 @@ jobs:
               "</body></html>\n",
               encoding="utf-8",
           )
-          print(f"Wrote {proj_index} with {len(links)} file link(s)")
+          print(
+              f"Wrote {proj_index} with {len(links)} trusted file link(s) kept, "
+              f"{dropped} untrusted link(s) dropped"
+          )
           PY
 
       - name: Commit and push the updated index
