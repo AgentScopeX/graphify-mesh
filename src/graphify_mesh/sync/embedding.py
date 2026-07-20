@@ -353,13 +353,18 @@ def compute_repo_shard(
         to_embed_inputs.append(input_text)
         shard[key] = {"content_hash": digest, "embedding": None}  # placeholder, filled below
 
+    total_batches = -(-len(to_embed_keys) // EMBED_BATCH_SIZE) if to_embed_keys else 0
+    if total_batches:
+        log.info("%s: embedding %d nodes in %d batches ...", repo_id, len(to_embed_keys), total_batches)
     for batch_start in range(0, len(to_embed_keys), EMBED_BATCH_SIZE):
+        batch_num = batch_start // EMBED_BATCH_SIZE + 1
         batch_keys = to_embed_keys[batch_start : batch_start + EMBED_BATCH_SIZE]
         batch_inputs = to_embed_inputs[batch_start : batch_start + EMBED_BATCH_SIZE]
         vectors = embed_batch(base_url, model, batch_inputs)
         for key, vector in zip(batch_keys, vectors):
             shard[key]["embedding"] = vector
             stats.embedded += 1
+        log.info("%s: batch %d/%d done (%d nodes embedded so far)", repo_id, batch_num, total_batches, stats.embedded)
 
     return shard
 
@@ -468,7 +473,8 @@ def run_embedding_stage(
     all_keys: set[str] = set()
     staged_shards: dict[str, dict] = {}
 
-    for repo_id, graph_data in graphs_by_repo.items():
+    total_repos = len(graphs_by_repo)
+    for i, (repo_id, graph_data) in enumerate(graphs_by_repo.items(), start=1):
         source_root = repo_roots_by_id.get(repo_id)
         previous_shard = read_previous_shard(previous_current_dir, repo_id)
 
@@ -477,9 +483,11 @@ def run_embedding_stage(
             # already told us this repo is untouched this run — reuse its
             # whole previous shard rather than re-reading/re-hashing every
             # node in it.
+            log.info("[%d/%d] %s: reusing previous shard (unchanged) ...", i, total_repos, repo_id)
             shard = previous_shard
             stats.reused_repos_unchanged += 1
         else:
+            log.info("[%d/%d] %s: computing shard ...", i, total_repos, repo_id)
             shard = compute_repo_shard(
                 repo_id,
                 graph_data,
