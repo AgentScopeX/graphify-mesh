@@ -4,11 +4,28 @@ Description=Reap orphaned graphify.serve / graphify extract processes
 
 [Service]
 Type=oneshot
+# SECURITY: this unit sends kill signals. As a *user* unit (default.target,
+# below) it runs as your user and can only kill your own processes. If you
+# instead install it as a SYSTEM unit, it would run as root and could kill
+# any process matching the reaper's criteria — in that case you MUST scope it
+# with an explicit unprivileged account:
+#User=graphify-mesh
 WorkingDirectory=/path/to/your/workspace
 # Edit: path to the graphify-mesh-reap console script inside your venv/pipx install.
 ExecStart=/path/to/your/venv/bin/graphify-mesh-reap --kill
 TimeoutStartSec=60
 MemoryMax=128M
+
+# --- sandboxing/hardening ----------------------------------------------------
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# Edit: with ProtectSystem=strict the whole filesystem is read-only for the
+# service, so you MUST list your mesh root (any directory this service needs
+# to write into) here or writes will fail.
+#ReadWritePaths=/path/to/your/workspace/graph-mesh
 
 [Install]
 WantedBy=default.target

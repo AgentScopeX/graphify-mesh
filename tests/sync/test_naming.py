@@ -86,6 +86,45 @@ def test_degraded_mode_skips_cluster_only_and_label_entirely(tmp_path, monkeypat
     assert not call_log.exists()  # no cluster-only/label invocation happened at all
 
 
+def test_cluster_only_silent_no_op_success_is_detected_and_degrades(tmp_path, monkeypatch):
+    """Regression test for a REAL observed upstream failure mode: `graphify
+    cluster-only` can hit its own internal shrink-guard (e.g. a malformed
+    node causes a node-count mismatch against the input), print
+    "Done - N communities" and exit 0, yet silently write ZERO
+    community/community_name onto any node. Trusting cluster_result.ok alone
+    would report LABELING_OK for a generation carrying no real names at
+    all — run_naming must detect this and degrade instead."""
+    monkeypatch.setenv("FAKE_GRAPHIFY_CONTROL", str(tmp_path / "control.json"))
+    call_log = tmp_path / "call-log.jsonl"
+    monkeypatch.setenv("FAKE_GRAPHIFY_CALL_LOG", str(call_log))
+
+    naming_dir = tmp_path / "naming"
+    out_dir = naming_dir / "graphify-out"
+    (tmp_path / "control.json").write_text(
+        json.dumps({str(out_dir): {"mode": "silent_success_no_names"}}), encoding="utf-8"
+    )
+
+    settings = _settings(tmp_path)
+    stripped = naming.strip_project_community_attrs(_merged_graph())
+
+    result = naming.run_naming(
+        str(FAKE_GRAPHIFY),
+        naming_dir,
+        tmp_path / "naming-home",
+        stripped,
+        settings,
+        health_check=lambda *a, **kw: True,
+    )
+
+    assert result.labeling == naming.LABELING_DEGRADED
+    assert "no community_name" in result.reason
+    # The graph is NOT silently swapped for something that looks named —
+    # it falls back to the stripped (pre-naming) input, honest about having
+    # no real names this generation.
+    for node in result.graph_data["nodes"]:
+        assert "community_name" not in node
+
+
 def test_sig_unchanged_community_not_sent_to_label_on_second_run(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_GRAPHIFY_CONTROL", str(tmp_path / "control.json"))
     call_log = tmp_path / "call-log.jsonl"

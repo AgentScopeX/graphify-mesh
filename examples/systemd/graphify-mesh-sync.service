@@ -16,5 +16,16 @@ ExecStart=/path/to/your/venv/bin/graphify-mesh-sync --once
 TimeoutStartSec=1800
 MemoryMax=2G
 
+# --- sandboxing/hardening ----------------------------------------------------
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# Edit: with ProtectSystem=strict the whole filesystem is read-only for the
+# service, so you MUST list your mesh root (the directory the sync engine
+# writes graphs into) here or the service will fail on the first write.
+#ReadWritePaths=/path/to/your/workspace/graph-mesh
+
 [Install]
 WantedBy=default.target

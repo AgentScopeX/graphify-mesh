@@ -117,6 +117,7 @@ def test_find_similar_tool_end_to_end(tmp_path, monkeypatch):
 
 
 def test_project_map_tool_end_to_end(tmp_path, monkeypatch):
+    write_registry(tmp_path / "bin" / "registry.json", [registry_repo("acme.repo", tmp_path)])
     node = make_node("acme.repo", "Widget", "src/widget.py", node_id="n1")
     generation = build_generation([node])
     server = _server(tmp_path, tmp_path)

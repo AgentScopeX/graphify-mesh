@@ -45,11 +45,44 @@ PROTOCOL_VERSION = "2024-11-05"
 
 DEFAULT_TOKEN_BUDGET = 2000
 
+# Upper bound for client-supplied `token_budget`: 50x the default. Large
+# enough for any legitimate evidence pack, small enough that a hostile value
+# can't drive unbounded work.
+MAX_TOKEN_BUDGET = 50 * DEFAULT_TOKEN_BUDGET
+
+# Single source of truth for the `k` ceiling: the same constant
+# `retrieval.rank` clamps against (retrieval.py) — validation here and the
+# clamp there can never drift apart.
+MAX_K = ranking.MAX_K
+
 
 class ToolError(RuntimeError):
     """Any tool-execution failure that should degrade to an MCP
     `isError: true` result rather than a JSON-RPC protocol error or a
     crashed process."""
+
+
+def _validate_k(arguments: dict) -> int:
+    """Client-supplied `k` must be a real int (bools excluded) in
+    [1, MAX_K]. Anything else is a ToolError, never a crash or a silent
+    coercion."""
+    k = arguments.get("k", ranking.DEFAULT_K)
+    if isinstance(k, bool) or not isinstance(k, int):
+        raise ToolError(f"'k' must be an integer between 1 and {MAX_K}")
+    if k < 1 or k > MAX_K:
+        raise ToolError(f"'k' must be between 1 and {MAX_K}, got {k}")
+    return k
+
+
+def _validate_token_budget(arguments: dict) -> int:
+    """Client-supplied `token_budget` must be a real int (bools excluded)
+    in [1, MAX_TOKEN_BUDGET]."""
+    budget = arguments.get("token_budget", DEFAULT_TOKEN_BUDGET)
+    if isinstance(budget, bool) or not isinstance(budget, int):
+        raise ToolError(f"'token_budget' must be an integer between 1 and {MAX_TOKEN_BUDGET}")
+    if budget < 1 or budget > MAX_TOKEN_BUDGET:
+        raise ToolError(f"'token_budget' must be between 1 and {MAX_TOKEN_BUDGET}, got {budget}")
+    return budget
 
 
 def _citation(repo: str, source_file: str, node: dict) -> str:
@@ -91,7 +124,7 @@ class GraphifyMeshServer:
 
     def tool_search(self, arguments: dict) -> dict:
         query = arguments.get("q", "")
-        k = int(arguments.get("k", ranking.DEFAULT_K))
+        k = _validate_k(arguments)
         entries = self._registry_entries()
         try:
             decision = resolve_scope(arguments.get("scope"), self.cwd, entries)
@@ -107,7 +140,7 @@ class GraphifyMeshServer:
 
     def tool_cross_project(self, arguments: dict) -> dict:
         query = arguments.get("q", "")
-        k = int(arguments.get("k", ranking.DEFAULT_K))
+        k = _validate_k(arguments)
         entries = self._registry_entries()
         try:
             repo_filter = resolve_repo_list(arguments.get("repos"), entries)
@@ -119,7 +152,7 @@ class GraphifyMeshServer:
 
     def tool_find_similar(self, arguments: dict) -> dict:
         node = arguments.get("node", "")
-        k = int(arguments.get("k", ranking.DEFAULT_K))
+        k = _validate_k(arguments)
         cross_repo_only = bool(arguments.get("cross_repo_only", False))
         generation = self._generation()
         result = similar_mod.find_similar(node, generation, k, cross_repo_only)
@@ -130,7 +163,22 @@ class GraphifyMeshServer:
         }
 
     def tool_project_map(self, arguments: dict) -> dict:
-        repo = arguments.get("repo", "")
+        repo = arguments.get("repo")
+        if not isinstance(repo, str) or not repo:
+            raise ToolError("'repo' must be a non-empty string (a registered repo_id)")
+        # Contract: project_map serves REGISTERED repo_ids only. A repo that
+        # is present in the current generation but has since been removed
+        # from the registry fails closed like an unknown one.
+        registered = {entry.repo_id for entry in self._registry_entries()}
+        if repo not in registered:
+            return {
+                "resolved": False,
+                "repo": repo,
+                "node_count": 0,
+                "community_breakdown": {},
+                "top_hubs": [],
+                "degraded": ["repo_not_registered"],
+            }
         generation = self._generation()
         result = project_map_mod.project_map(repo, generation)
         return {
@@ -144,7 +192,7 @@ class GraphifyMeshServer:
 
     def tool_context_pack(self, arguments: dict) -> dict:
         goal = arguments.get("goal", "")
-        token_budget = int(arguments.get("token_budget", DEFAULT_TOKEN_BUDGET))
+        token_budget = _validate_token_budget(arguments)
         entries = self._registry_entries()
         try:
             decision = resolve_scope(arguments.get("scope"), self.cwd, entries)
@@ -263,6 +311,12 @@ class GraphifyMeshServer:
             return {"content": [{"type": "text", "text": json.dumps(result)}], "isError": False}
         except ToolError as exc:
             return {"content": [{"type": "text", "text": str(exc)}], "isError": True}
+        except Exception:
+            # Includes non-JSON-serializable results from json.dumps above.
+            # Traceback to stderr only; the client sees a generic message —
+            # never exception text, paths, or stack frames.
+            log.exception("tool %r raised an unexpected exception", name)
+            return {"content": [{"type": "text", "text": "internal error"}], "isError": True}
 
     # --- JSON-RPC method dispatch ------------------------------------------
 

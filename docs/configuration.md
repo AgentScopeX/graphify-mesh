@@ -101,7 +101,7 @@ Source of truth for which repos are in the mesh. See
 
 | Field | Meaning |
 |-------|---------|
-| `repos[].repo_id` | Stable logical id; becomes the node-id prefix / `repo` attribute in the merged graph. |
+| `repos[].repo_id` | Stable logical id; becomes the node-id prefix / `repo` attribute in the merged graph. Must match `^[A-Za-z0-9][A-Za-z0-9._-]*$` (it is used as a filename, e.g. embedding shards) and be unique — duplicates are a load-time error. |
 | `repos[].root` | The repo's checkout directory. |
 | `repos[].collection_path` | Directory holding that repo's `graph.json`. |
 | `repos[].enabled` | If `false`, the repo is skipped. |

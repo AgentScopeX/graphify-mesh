@@ -373,6 +373,67 @@ def test_run_embedding_stage_degraded_carries_forward_previous_vectors(tmp_path)
     assert result.vectors_by_repo["repo.a"]["repo.a\x1fsrc/w.py\x1fWidget"] == [7.0]
 
 
+def test_run_embedding_stage_mid_run_failure_is_partial_not_crash(tmp_path, monkeypatch):
+    """Regression test: a real network failure DURING embedding (health
+    check passed, then embed_batch itself raises — e.g. a DNS blip) must
+    degrade the run, not propagate and crash the whole pipeline. repo.a is
+    processed successfully before the failure; repo.b's embed_batch call
+    fails; repo.c (not yet reached) must fall back to its previous shard
+    rather than being silently skipped or crashing the process."""
+    settings = _settings(tmp_path)
+    prev_gen_dir = settings.embeddings_dir / "generations" / "gen-0"
+    prev_gen_dir.mkdir(parents=True)
+    (prev_gen_dir / "repo.c.json").write_text(
+        json.dumps({"repo_id": "repo.c", "entries": {"repo.c\x1fsrc/z.py\x1fZeta": {"content_hash": "prevc", "embedding": [3.0]}}}),
+        encoding="utf-8",
+    )
+    (prev_gen_dir / "id-map.json").write_text(json.dumps({}), encoding="utf-8")
+    (settings.embeddings_dir / "current").symlink_to(prev_gen_dir, target_is_directory=True)
+
+    def flaky_embed_batch(base_url, model, inputs, timeout=30.0):
+        if "network-blip-marker" in inputs[0]:
+            raise RuntimeError("embed_batch request failed: <urlopen error [Errno -2] Name or service not known>")
+        return [[1.0] for _ in inputs]
+
+    monkeypatch.setattr(embedding, "embed_batch", flaky_embed_batch)
+
+    def _graph_with_marker(marker: str) -> dict:
+        return {
+            "nodes": [
+                {
+                    "id": "n1",
+                    "label": marker,
+                    "source_file": "src/w.py",
+                    "loc": "L1",
+                    "community_name": "Widgets",
+                }
+            ]
+        }
+
+    graphs_by_repo = {
+        "repo.a": _graph_with_marker("Alpha"),
+        "repo.b": _graph_with_marker("network-blip-marker-Bravo"),
+        "repo.c": _graph_with_marker("Gamma"),
+    }
+    result = embedding.run_embedding_stage(
+        graph_paths_by_repo={},
+        repo_roots_by_id={"repo.a": tmp_path, "repo.b": tmp_path, "repo.c": tmp_path},
+        graphs_by_repo=graphs_by_repo,
+        unchanged_repo_ids=set(),
+        settings=settings,
+        provisional_generation_id="gen-1",
+        health_check=lambda base_url, timeout: True,
+    )
+
+    assert result.status == embedding.EMBED_PARTIAL
+    assert "repo.b" in result.reason
+    # repo.a completed for real before the failure.
+    assert result.vectors_by_repo["repo.a"]
+    # repo.c (not yet reached when the failure hit) fell back to its
+    # previous published vector rather than being lost or crashing.
+    assert result.vectors_by_repo["repo.c"]["repo.c\x1fsrc/z.py\x1fZeta"] == [3.0]
+
+
 # ---------------------------------------------------------------------------
 # persist_generation: staging -> permanent storage -> GC, only on publish
 # ---------------------------------------------------------------------------
@@ -396,3 +457,42 @@ def test_persist_generation_writes_current_and_gcs_old(tmp_path):
     assert current.is_symlink()
     assert current.resolve().name == "20260103T000000Z-ccc"
     assert (current / "repo.a.json").is_file()
+
+
+# ---------------------------------------------------------------------------
+# hostile-input guards: shard filenames and snippet paths
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad_id", ["../evil", "a/b", "a\\b", ".hidden", "..", ".", ""])
+def test_shard_filename_rejects_unsafe_repo_id(bad_id):
+    with pytest.raises(ValueError, match="unsafe repo_id"):
+        embedding._shard_filename(bad_id)
+
+
+def test_read_previous_shard_refuses_traversal_repo_id(tmp_path):
+    current_dir = tmp_path / "current"
+    current_dir.mkdir()
+    (tmp_path / "outside.json").write_text(json.dumps({"entries": {"leaked": {}}}), encoding="utf-8")
+    with pytest.raises(ValueError, match="unsafe repo_id"):
+        embedding.read_previous_shard(current_dir, "../outside")
+
+
+def test_stage_embeddings_refuses_traversal_repo_id(tmp_path):
+    with pytest.raises(ValueError, match="unsafe repo_id"):
+        embedding.stage_embeddings(tmp_path, {"../escape": {}}, id_map={})
+
+
+def test_build_snippet_rejects_absolute_source_file(tmp_path):
+    secret = tmp_path / "secret.txt"
+    secret.write_text("token=very-secret", encoding="utf-8")
+    root = tmp_path / "repo"
+    root.mkdir()
+    assert embedding.build_snippet(root, str(secret), line=1) == ""
+
+
+def test_build_snippet_rejects_dotdot_traversal(tmp_path):
+    (tmp_path / "secret.txt").write_text("token=very-secret", encoding="utf-8")
+    root = tmp_path / "repo"
+    root.mkdir()
+    assert embedding.build_snippet(root, "../secret.txt", line=1) == ""

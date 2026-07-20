@@ -14,7 +14,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
@@ -22,9 +22,13 @@ jobs:
         # Plain OSS gitleaks CLI, not gitleaks/gitleaks-action: that Action now
         # requires a paid GITLEAKS_LICENSE for GitHub Organizations. The CLI
         # itself stays free/open-source.
+        # The sha256 below is pinned from the official release checksums file:
+        # https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_checksums.txt
         run: |
-          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz \
-            | tar -xz gitleaks
+          curl -sSfL -o gitleaks_8.30.1_linux_x64.tar.gz \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  gitleaks_8.30.1_linux_x64.tar.gz" | sha256sum -c -
+          tar -xzf gitleaks_8.30.1_linux_x64.tar.gz gitleaks
           ./gitleaks detect --source . --no-banner --redact
 
   trufflehog:
@@ -32,12 +36,22 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
-      - name: trufflehog — scan git history for verified secrets
-        uses: trufflesecurity/trufflehog@v3.95.9
+      - name: trufflehog — scan PR commits for verified secrets (pull_request)
+        if: github.event_name == 'pull_request'
+        uses: trufflesecurity/trufflehog@27b0417c16317ca9a472a9a8092acce143b49c55 # v3.95.9
+        with:
+          path: ./
+          base: ${{ github.event.pull_request.base.sha }}
+          head: ${{ github.event.pull_request.head.sha }}
+          extra_args: --results=verified,unknown
+
+      - name: trufflehog — scan full git history for verified secrets (push)
+        if: github.event_name == 'push'
+        uses: trufflesecurity/trufflehog@27b0417c16317ca9a472a9a8092acce143b49c55 # v3.95.9
         with:
           path: ./
           base: ""
@@ -49,10 +63,10 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
 
@@ -62,13 +76,49 @@ jobs:
         run: pip install -e ".[test]"
 
       - name: pip-audit — audit installed Python dependencies for known CVEs
-        # Best-effort: depends on reachability of the PyPI advisory DB, so a
-        # network hiccup shouldn't fail the whole pipeline the way a real
-        # secret leak or a code vulnerability should.
-        continue-on-error: true
+        # pip-audit exits 1 when it finds known vulnerabilities — that MUST
+        # fail the job. Only other nonzero exit codes (infra/network errors,
+        # e.g. the PyPI advisory DB being unreachable) are downgraded to a
+        # logged warning so a transient hiccup doesn't block the pipeline.
         run: |
           pip install pip-audit
+          set +e
           pip-audit
+          code=$?
+          set -e
+          case "$code" in
+            0)
+              echo "pip-audit: no known vulnerabilities found."
+              ;;
+            1)
+              echo "::error::pip-audit found known vulnerabilities in installed dependencies."
+              exit 1
+              ;;
+            *)
+              echo "::warning::pip-audit exited with code $code (infra/network error, not a vulnerability finding); not failing the job."
+              ;;
+          esac
+
+  lint:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Install graphify-mesh with lint extras
+        run: pip install -e ".[lint]"
+
+      - name: ruff — lint
+        run: ruff check .
+
+      - name: mypy — type-check src/
+        run: mypy src/
 
   test:
     needs: [gitleaks, trufflehog, pip-audit]
@@ -80,10 +130,10 @@ jobs:
         module: [sync, server, hardening]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -99,10 +149,10 @@ jobs:
     needs: [gitleaks, trufflehog, pip-audit]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
 

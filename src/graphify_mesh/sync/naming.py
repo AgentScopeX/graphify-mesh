@@ -38,7 +38,7 @@ from typing import Callable
 
 from graphify_mesh.sync import graphify_cli
 from graphify_mesh.sync.backend import BackendCheckResult, assert_pinned_backend
-from graphify_mesh.sync.config import Settings
+from graphify_mesh.sync.config import Settings, is_valid_http_base_url
 
 log = logging.getLogger("graphify_mesh.sync.naming")
 
@@ -129,6 +129,23 @@ def run_naming(
 ) -> NamingResult:
     backend_check = assert_pinned_backend(graphify_bin)
 
+    # URL scheme gate BEFORE any health check runs: a base URL that is not
+    # plain http(s)-with-host (file://, gopher://, ...) fails this stage's
+    # health-check path outright — degraded mode, zero requests attempted.
+    if not is_valid_http_base_url(settings.ollama_base_url):
+        log.warning(
+            "invalid ollama base URL %r (scheme must be http or https with a non-empty host) — "
+            "skipping cluster-only/label entirely (degraded mode)",
+            settings.ollama_base_url,
+        )
+        return NamingResult(
+            labeling=LABELING_DEGRADED,
+            graph_data=merged_graph_data,
+            backend=backend_check.backend,
+            reason="invalid ollama base URL",
+            backend_check=backend_check,
+        )
+
     check = health_check if health_check is not None else default_ollama_health_check
     healthy = check(settings.ollama_base_url, settings.ollama_api_key, settings.ollama_health_timeout)
 
@@ -181,11 +198,63 @@ def run_naming(
             model=settings.ollama_model,
         )
         if not label_result.ok:
-            raise RuntimeError(
-                f"graphify label failed: exit={label_result.returncode}: {label_result.stderr.strip()[:500]}"
+            # The pre-flight health check passed (server was up), but the
+            # actual `graphify label` call failed — a mid-run network blip,
+            # the Ollama host going down partway through a long labeling
+            # job, etc. This must degrade, not crash: clustering (local,
+            # already succeeded) is still valid, so fall back to whatever
+            # names are already on disk (a mix of prior names plus any
+            # communities the label call finished before failing) rather
+            # than losing the whole naming stage — and critically, rather
+            # than crashing the entire pipeline run (which would also throw
+            # away the embedding/overlay/publish stages that haven't even
+            # run yet).
+            log.warning(
+                "graphify label failed mid-run (exit=%s: %s) — degrading naming for this generation, "
+                "keeping whatever names are already on disk",
+                label_result.returncode,
+                label_result.stderr.strip()[:500],
+            )
+            final_graph_data = json.loads(graph_path.read_text(encoding="utf-8"))
+            return NamingResult(
+                labeling=LABELING_DEGRADED,
+                graph_data=final_graph_data,
+                backend=backend_check.backend,
+                changed_cids=changed_cids,
+                reason=f"graphify label failed: {label_result.stderr.strip()[:300]}",
+                backend_check=backend_check,
             )
 
     final_graph_data = json.loads(graph_path.read_text(encoding="utf-8"))
+
+    # Verify the write actually happened before trusting exit-code success.
+    # A real, observed failure mode: `graphify cluster-only`/`label` can hit
+    # their OWN internal shrink-guard (e.g. a malformed node produces a
+    # node-count mismatch against the input), print "Done - N communities"
+    # and exit 0, yet silently refuse to write community/community_name onto
+    # any node. Trusting cluster_result.ok/label_result.ok alone would report
+    # LABELING_OK for a generation that carries zero real names — this check
+    # catches that specific upstream failure mode rather than propagating a
+    # false success.
+    nodes = final_graph_data.get("nodes", [])
+    named_count = sum(1 for n in nodes if isinstance(n, dict) and n.get("community_name"))
+    if nodes and named_count == 0:
+        log.warning(
+            "graphify cluster-only/label exited 0 but wrote zero community_name values onto "
+            "%d node(s) — a known upstream failure mode (internal shrink-guard silently refusing "
+            "the write, e.g. after a malformed node caused a node-count mismatch); degrading "
+            "rather than reporting a false LABELING_OK",
+            len(nodes),
+        )
+        return NamingResult(
+            labeling=LABELING_DEGRADED,
+            graph_data=merged_graph_data,
+            backend=backend_check.backend,
+            changed_cids=changed_cids,
+            reason="graphify cluster-only/label exited 0 but wrote no community_name onto any node",
+            backend_check=backend_check,
+        )
+
     return NamingResult(
         labeling=LABELING_OK,
         graph_data=final_graph_data,
