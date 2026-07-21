@@ -19,7 +19,7 @@ import logging
 import sys
 from pathlib import Path
 
-from graphify_mesh.sync.config import Settings
+from graphify_mesh.sync.config import EXTRACT_MIN_CONCURRENCY, Settings
 from graphify_mesh.sync.locking import LockHeldError
 from graphify_mesh.sync.pipeline import run
 
@@ -76,6 +76,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="Explicitly authorize a smaller published graph than the previous generation.",
     )
+    parser.add_argument(
+        "--extract-concurrency",
+        type=int,
+        default=None,
+        help=(
+            "Max concurrent `graphify extract`/`update` children (default 2, floor 1). "
+            "Each child's RSS lands in this process's cgroup MemoryMax, so raise with "
+            "care; never derive from repo count."
+        ),
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     return parser.parse_args(argv)
 
@@ -87,14 +97,23 @@ def main(argv: list[str] | None = None) -> int:
         format="%(levelname)s %(name)s: %(message)s",
     )
 
+    overrides: dict = {
+        "dry_run": args.dry_run,
+        "skip_labeling": args.skip_labeling,
+        "skip_embedding": args.skip_embedding,
+        "allow_shrink": args.allow_shrink,
+    }
+    if args.extract_concurrency is not None:
+        # Same hard floor as the env-var path (_extract_concurrency_from_env):
+        # a bad/too-low CLI value degrades to fully sequential rather than
+        # reaching ThreadPoolExecutor(max_workers=0), which raises.
+        overrides["extract_concurrency"] = max(args.extract_concurrency, EXTRACT_MIN_CONCURRENCY)
+
     settings = Settings.from_env(
         mesh_root=args.mesh_root,
         scan_root=args.scan_root,
         registry_path=args.registry,
-        dry_run=args.dry_run,
-        skip_labeling=args.skip_labeling,
-        skip_embedding=args.skip_embedding,
-        allow_shrink=args.allow_shrink,
+        **overrides,
     )
 
     try:

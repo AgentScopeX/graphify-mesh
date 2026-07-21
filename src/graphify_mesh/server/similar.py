@@ -20,8 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from graphify_mesh.server import lexical_read
-from graphify_mesh.server import ranking
+from graphify_mesh.server import lexical_read, ranking
 from graphify_mesh.server.retrieval import Hit, _hit_from_key
 from graphify_mesh.server.store import Generation
 from graphify_mesh.sync.lexical_index import normalize_alias_query

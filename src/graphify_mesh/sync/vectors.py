@@ -16,7 +16,7 @@ import numpy as np
 log = logging.getLogger(__name__)
 
 
-def _is_empty_vector(vector: "list[float] | np.ndarray") -> bool:
+def _is_empty_vector(vector: list[float] | np.ndarray) -> bool:
     """`bool(ndarray)` raises for arrays with more than one element, so a
     plain `not vector` truthiness check (fine for lists) cannot be reused
     here — check `.size` for ndarrays, length/truthiness for everything
@@ -31,7 +31,7 @@ class RepoVectors:
     keys: list[str]  # sorted; row i of matrix belongs to keys[i]
     matrix: np.ndarray  # float32, shape (len(keys), dim); may be a read-only mmap
     _index: dict[str, int] = field(default_factory=dict, repr=False, compare=False)
-    _normalized: "np.ndarray | None" = field(default=None, repr=False, compare=False)
+    _normalized: np.ndarray | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if self._index:
@@ -39,7 +39,7 @@ class RepoVectors:
         self._index = {key: i for i, key in enumerate(self.keys)}
 
     @classmethod
-    def from_mapping(cls, vectors: dict[str, "list[float] | np.ndarray"]) -> "RepoVectors":
+    def from_mapping(cls, vectors: dict[str, list[float] | np.ndarray]) -> RepoVectors:
         """Build a RepoVectors from a ``{key: [float, ...]}`` mapping.
 
         Values may be plain float lists or 1-D numpy arrays (e.g. rows
@@ -112,7 +112,7 @@ class RepoVectors:
         return cls(keys=kept_keys, matrix=matrix)
 
     @classmethod
-    def from_rows(cls, keys_by_row: list[str], matrix: "np.ndarray") -> "RepoVectors":
+    def from_rows(cls, keys_by_row: list[str], matrix: np.ndarray) -> RepoVectors:
         """Builds a RepoVectors from on-disk row order, canonicalizing to the
         sorted-key invariant (`keys` sorted; row i belongs to `keys[i]`).
 
@@ -137,10 +137,10 @@ class RepoVectors:
         return cls(keys=sorted_keys, matrix=matrix[order])
 
     @classmethod
-    def empty(cls, dim: int = 0) -> "RepoVectors":
+    def empty(cls, dim: int = 0) -> RepoVectors:
         return cls(keys=[], matrix=np.zeros((0, dim), dtype=np.float32))
 
-    def get(self, key: str) -> "np.ndarray | None":
+    def get(self, key: str) -> np.ndarray | None:
         row_index = self._index.get(key)
         if row_index is None:
             return None

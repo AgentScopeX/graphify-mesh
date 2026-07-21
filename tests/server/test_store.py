@@ -7,8 +7,11 @@ import numpy as np
 import pytest
 
 from graphify_mesh.server.config import ServerConfig
-from graphify_mesh.server.store import GenerationStore, GenerationUnavailableError
-from graphify_mesh.server.store import validate_manifest_consistency
+from graphify_mesh.server.store import (
+    GenerationStore,
+    GenerationUnavailableError,
+    validate_manifest_consistency,
+)
 from graphify_mesh.sync.embedding import RepoShard, stage_embeddings
 from graphify_mesh.sync.vectors import RepoVectors
 
@@ -176,7 +179,9 @@ def test_present_but_non_dict_lexical_file_is_validation_error(tmp_path):
         [{"id": "n1", "repo": "repo.a", "label": "Alpha", "source_file": "a.py"}],
     )
     gen_dir = config.global_dir / "generations" / "gen-1"
-    (gen_dir / "lexical-index.json").write_text(json.dumps(["not", "an", "object"]), encoding="utf-8")
+    (gen_dir / "lexical-index.json").write_text(
+        json.dumps(["not", "an", "object"]), encoding="utf-8"
+    )
 
     store = GenerationStore(config)
     with pytest.raises(GenerationUnavailableError):

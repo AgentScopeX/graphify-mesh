@@ -26,8 +26,6 @@ can't flood the overlay with edges (WS4 ship-order item 2: "per-pair cap").
 
 from __future__ import annotations
 
-import numpy as np
-
 from graphify_mesh.sync.embed_similarity import (
     SIMILARITY_THRESHOLD_DEFAULT,
     mutual_top_k_pairs,
@@ -136,15 +134,12 @@ def _embedding_pairs(
     threshold: float,
     embedding_model: str,
 ) -> tuple[list[OverlayEdge], set[str]]:
-    items: dict[str, tuple[str, np.ndarray]] = {}
-    for repo_id, rv in embedding_vectors_by_repo.items():
-        for row_index, key in enumerate(rv.keys):
-            items[key] = (repo_id, rv.matrix[row_index])
+    total = sum(len(rv) for rv in embedding_vectors_by_repo.values())
+    all_keys = {key for rv in embedding_vectors_by_repo.values() for key in rv.keys}
+    if total < 2:
+        return [], all_keys
 
-    if len(items) < 2:
-        return [], set(items.keys())
-
-    pairs = mutual_top_k_pairs(items, top_k=top_k, threshold=threshold)
+    pairs = mutual_top_k_pairs(embedding_vectors_by_repo, top_k=top_k, threshold=threshold)
 
     edges: list[OverlayEdge] = []
     per_repo_pair_emitted: dict[frozenset, int] = {}
@@ -168,7 +163,7 @@ def _embedding_pairs(
                 ),
             )
         )
-    return edges, set(items.keys())
+    return edges, all_keys
 
 
 def compute_similar_approach_edges(

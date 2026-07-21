@@ -28,6 +28,7 @@ keep their upstream names: `GRAPHIFY_BIN` and `GRAPHIFY_NO_BACKUP`.
 | `GRAPHIFY_MESH_OLLAMA_EMBED_BASE_URL` | sync (embed) | `http://localhost:11434` | **Native** `/api/embed` endpoint (no `/v1` suffix). |
 | `GRAPHIFY_MESH_OLLAMA_EMBED_MODEL` | sync (embed) | `qwen3-embedding:0.6b` | Embedding model. |
 | `GRAPHIFY_MESH_OLLAMA_EMBED_HEALTH_TIMEOUT` | sync (embed) | `3.0` | Seconds to wait on the embed-stage health check before degrading. |
+| `GRAPHIFY_MESH_EXTRACT_CONCURRENCY` | sync (extract) | `2` | Max concurrent per-repo `graphify extract`/`update` children (bounded thread pool). Every child's RSS lands in the same cgroup `MemoryMax` as the parent sync process (steady-state parent peak observed ~1.9G inside a 4G cgroup), so this is a tuned, hard-capped setting — never derive it from the repo count. `subprocess.run` releases the GIL, so a thread pool (not a process pool) is sufficient. Unparsable/zero/negative values fall back to the hard floor of `1` (fully sequential) rather than raising. |
 | `GRAPHIFY_BIN` | sync | `graphify` | Name/path of the upstream `graphify` binary. |
 | `GRAPHIFY_NO_BACKUP` | sync | (set to `1` on child calls) | Suppresses `graphify`'s dated backup dirs; the sync engine always sets this on the graphify subprocesses it spawns. |
 
@@ -43,6 +44,7 @@ keep their upstream names: `GRAPHIFY_BIN` and `GRAPHIFY_NO_BACKUP`.
 | `--skip-labeling` / `--no-skip-labeling` | Skip / enforce the non-placeholder community-name check. |
 | `--skip-embedding` | Log-skip the embedding stage. |
 | `--allow-shrink` | Authorize publishing a smaller graph than the previous generation. |
+| `--extract-concurrency N` | Override `GRAPHIFY_MESH_EXTRACT_CONCURRENCY` (default 2, floor 1). |
 | `-v`, `--verbose` | Debug logging. |
 
 ## `Settings` fields (sync)
@@ -57,6 +59,10 @@ pipeline run. Notable fields and derived paths:
   health timeouts (plus test-only injectable health checks).
 - `keep_embedding_generations` — how many published generations' embedding
   shards to keep on disk (older ones are GC'd at publish time).
+- `extract_concurrency` — max concurrent per-repo `graphify extract`/`update`
+  children on the bounded thread pool (default 2, hard floor 1). Every
+  child's RSS lands in the same cgroup `MemoryMax` as the parent sync
+  process, so this is a tuned cap, never `len(repos)`.
 
 Derived path properties (all under `mesh_root`):
 

@@ -137,6 +137,35 @@ FORBIDDEN_OVERLAY_RELATION_TYPES = frozenset(
     }
 )
 
+# Bounded parallelism for per-repo `graphify extract`/`update` children
+# (Task 7 perf plan). Every child's RSS lands in the SAME cgroup MemoryMax as
+# the parent sync process (steady-state parent peak observed ~1.9G inside a
+# 4G cgroup), so this is a tuned, hard-capped setting — default 2, NEVER
+# derived from len(repos). subprocess.run releases the GIL while the child
+# runs, so a bounded thread pool (not a process pool) is sufficient.
+EXTRACT_DEFAULT_CONCURRENCY = 2
+# Hard floor: 1 = fully sequential (pre-parallelism behavior). Bad env input
+# degrades to this floor rather than crashing the pipeline at startup.
+EXTRACT_MIN_CONCURRENCY = 1
+
+
+def _extract_concurrency_from_env(name: str, default: int) -> int:
+    """Parse GRAPHIFY_MESH_EXTRACT_CONCURRENCY. Unset -> default; unparsable,
+    zero, or negative -> the hard floor (EXTRACT_MIN_CONCURRENCY) rather than
+    raising — a bad value here should degrade to safe sequential behavior,
+    not abort the run."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return EXTRACT_MIN_CONCURRENCY
+    if value < EXTRACT_MIN_CONCURRENCY:
+        return EXTRACT_MIN_CONCURRENCY
+    return value
+
+
 # File extension -> source category, for manifest-diff decisions (WS1 item 2).
 # dict-dispatch instead of if/elif chains per project code style.
 CODE_EXTENSIONS = frozenset(
@@ -268,6 +297,15 @@ class Settings:
     ollama_embed_health_check: Callable[[str, float], bool] | None = None
     keep_embedding_generations: int = KEEP_EMBEDDING_GENERATIONS
     keep_structural_generations: int = KEEP_STRUCTURAL_GENERATIONS
+
+    # Bounded parallelism for per-repo `graphify extract/update` children.
+    # Each child's RSS lands in the same MemoryMax cgroup as this process,
+    # so this is a tuned cap (default 2), never len(repos).
+    extract_concurrency: int = field(
+        default_factory=lambda: _extract_concurrency_from_env(
+            "GRAPHIFY_MESH_EXTRACT_CONCURRENCY", EXTRACT_DEFAULT_CONCURRENCY
+        )
+    )
 
     @property
     def global_dir(self) -> Path:

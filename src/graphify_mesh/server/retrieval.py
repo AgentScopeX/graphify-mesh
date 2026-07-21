@@ -13,8 +13,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from graphify_mesh.server import lexical_read
-from graphify_mesh.server import ranking
+from graphify_mesh.server import lexical_read, ranking
 from graphify_mesh.server.store import Generation
 from graphify_mesh.sync.lexical_index import normalize_alias_query, tokenize_text
 from graphify_mesh.sync.vectors import RepoVectors
@@ -138,7 +137,7 @@ def vector_candidates(
         if len(repo_vectors) == 0:
             continue
         scores = _repo_scores(repo_vectors, normalized_query)
-        for key, score in zip(repo_vectors.keys, scores):
+        for key, score in zip(repo_vectors.keys, scores, strict=True):
             scored.append((key, float(score)))
     scored.sort(key=lambda kv: (-kv[1], kv[0]))
     return [k for k, _ in scored[:depth]], False

@@ -9,6 +9,7 @@ from graphify_mesh.sync import (
     embedding,
     overlay_api,
     overlay_depends,
+    overlay_refs,
     overlay_similar,
     validate,
 )
@@ -156,6 +157,24 @@ def test_manual_relation_dangling_ref_is_hard_error():
     ]
     with pytest.raises(DanglingReferenceError):
         overlay_depends.build_manual_relation_edges(raw, graphs_by_repo)
+
+
+def test_resolve_ref_uses_shared_index_cache(monkeypatch):
+    graphs = {"repoA": {"nodes": [{"source_file": "a.py", "label": "L"}]}}
+    calls = []
+    real = overlay_refs.build_repo_node_index
+
+    def counting(graph_data):
+        calls.append(1)
+        return real(graph_data)
+
+    monkeypatch.setattr(overlay_refs, "build_repo_node_index", counting)
+    cache: dict[str, dict] = {}
+    ref = LogicalRef(repo="repoA", source_file="a.py", qualified_label="L")
+    overlay_refs.resolve_ref(ref, graphs, cache)
+    overlay_refs.resolve_ref(ref, graphs, cache)
+    overlay_refs.resolve_ref(ref, graphs, cache)
+    assert len(calls) == 1
 
 
 def test_manual_relations_schema_rejects_bad_shape(tmp_path):

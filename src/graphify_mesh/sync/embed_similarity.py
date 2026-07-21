@@ -27,9 +27,16 @@ override once real tuning data exists (see `overlay_similar.py` callers).
 
 from __future__ import annotations
 
+import logging
 import random
+from typing import TYPE_CHECKING
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from graphify_mesh.sync.vectors import RepoVectors
+
+log = logging.getLogger(__name__)
 
 # Untuned default (C7) — real tuning needs labeled similar/dissimilar node
 # pairs, which do not exist yet. Revisit once WS7's eval harness collects
@@ -39,9 +46,14 @@ SIMILARITY_THRESHOLD_DEFAULT = 0.82
 LSH_NUM_HYPERPLANES = 12
 LSH_SEED = 1337
 
+# Cap on rows per sims-matrix chunk inside one LSH bucket: bounds the
+# transient b x chunk float32 product (a hot 4096-row bucket would
+# otherwise allocate a 64MB b x b matrix in one shot).
+BUCKET_CHUNK_ROWS = 1024
+
 
 def cosine_similarity(
-    a: "list[float] | np.ndarray", b: "list[float] | np.ndarray"
+    a: list[float] | np.ndarray, b: list[float] | np.ndarray
 ) -> float:
     # Mixed-dimension vectors (e.g. a shard embedded under two different
     # models) carry no comparable signal — score them 0 instead of raising.
@@ -89,7 +101,7 @@ def _bucket_signature_batch(matrix: np.ndarray, planes: np.ndarray) -> list[str]
 
 
 def mutual_top_k_pairs(
-    items: dict[str, tuple[str, "list[float] | np.ndarray"]],
+    vectors_by_repo: dict[str, RepoVectors],
     top_k: int,
     threshold: float = SIMILARITY_THRESHOLD_DEFAULT,
     num_planes: int = LSH_NUM_HYPERPLANES,
@@ -98,9 +110,11 @@ def mutual_top_k_pairs(
     """Cross-repo-only mutual top-k similarity pairs.
 
     Args:
-        items: key -> (repo_id, vector). `repo_id` is used to enforce the
-            cross-repo-only constraint (WS4 ship order item 2) — same-repo
-            pairs are never candidates regardless of similarity.
+        vectors_by_repo: repo_id -> RepoVectors, the per-repo containers
+            already resident from the embedding stage. `repo_id` is used to
+            enforce the cross-repo-only constraint (WS4 ship order item 2)
+            — same-repo pairs are never candidates regardless of
+            similarity.
         top_k: cap on candidates kept per node before the mutual filter.
         threshold: minimum cosine similarity to be a candidate at all.
 
@@ -110,30 +124,48 @@ def mutual_top_k_pairs(
         in the other's top-k candidate list ("mutual" top-k) and the repos
         differ.
     """
-    keys = list(items.keys())
+    repo_ids = sorted(repo_id for repo_id, rv in vectors_by_repo.items() if len(rv))
+    if not repo_ids:
+        return []
+    dim = vectors_by_repo[repo_ids[0]].dim
+
+    # Repos whose dim differs from the first (sorted) repo's dim are dropped
+    # entirely — same "scores zero everywhere" outcome as the old per-vector
+    # drop, since cosine_similarity always rejected mixed dimensions.
+    kept_repo_ids: list[str] = []
+    for repo_id in repo_ids:
+        rv = vectors_by_repo[repo_id]
+        if rv.dim != dim:
+            log.warning(
+                "similar_approach: repo %s embedding dim %d != %d — dropped from ANN",
+                repo_id,
+                rv.dim,
+                dim,
+            )
+            continue
+        kept_repo_ids.append(repo_id)
+
+    # Flattened row addressing: (repo_id, local_row) per global row, in
+    # sorted-repo then sorted-key order — matches the old items-dict
+    # insertion order exactly, so bucket contents and pair ordering are
+    # stable across this refactor.
+    row_refs: list[tuple[str, int]] = []
+    keys: list[str] = []
+    for repo_id in kept_repo_ids:
+        rv = vectors_by_repo[repo_id]
+        for local_row, key in enumerate(rv.keys):
+            row_refs.append((repo_id, local_row))
+            keys.append(key)
     if len(keys) < 2:
         return []
 
-    # Stack all vectors in key order into one float32 matrix. Mixed-dim
-    # vectors are dropped here — same "scores zero everywhere" outcome as
-    # the scalar implementation, since cosine_similarity always rejected
-    # mixed dimensions; dropping them up front just avoids a ragged stack.
-    dim = len(items[keys[0]][1])
-    kept_keys = [key for key in keys if len(items[key][1]) == dim]
-    if len(kept_keys) < 2:
-        return []
-
-    repo_by_key = {key: items[key][0] for key in kept_keys}
-    matrix = np.asarray([items[key][1] for key in kept_keys], dtype=np.float32)
-
-    # L2-normalize rows once; zero-norm rows normalize to zero vectors so
-    # they never contribute a nonzero similarity to anything.
-    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
-    safe_norms = np.where(norms == 0.0, 1.0, norms)
-    normalized = np.where(norms == 0.0, 0.0, matrix / safe_norms)
-
     planes = _planes_matrix(dim, num_planes, seed)
-    signatures = _bucket_signature_batch(matrix, planes)
+    # Signatures per repo straight off the RAW resident matrix — no combined
+    # copy, and raw (not normalized) keeps bucket assignments identical to
+    # the previous implementation.
+    signatures: list[str] = []
+    for repo_id in kept_repo_ids:
+        signatures.extend(_bucket_signature_batch(vectors_by_repo[repo_id].matrix, planes))
 
     buckets: dict[str, list[int]] = {}
     for row_index, sig in enumerate(signatures):
@@ -142,26 +174,37 @@ def mutual_top_k_pairs(
     # Candidate generation: only within-bucket comparisons (ANN, not
     # all-pairs). Exact cosine + threshold filtering still applies to every
     # candidate pair actually compared, so scoring is never approximate.
-    candidates: dict[str, list[tuple[str, float]]] = {key: [] for key in kept_keys}
+    candidates: dict[str, list[tuple[str, float]]] = {key: [] for key in keys}
     for bucket_rows in buckets.values():
         if len(bucket_rows) < 2:
             continue
-        sub = normalized[bucket_rows]
-        sims = sub @ sub.T
-        for i, row_a in enumerate(bucket_rows):
-            key_a = kept_keys[row_a]
-            repo_a = repo_by_key[key_a]
-            for j in range(i + 1, len(bucket_rows)):
-                row_b = bucket_rows[j]
-                key_b = kept_keys[row_b]
-                repo_b = repo_by_key[key_b]
-                if repo_a == repo_b:
-                    continue
-                score = float(sims[i, j])
-                if score < threshold:
-                    continue
-                candidates[key_a].append((key_b, score))
-                candidates[key_b].append((key_a, score))
+        # Gather normalized rows for this bucket only, from each repo's
+        # cached normalized() matrix — the only allocation is bucket-sized.
+        sub = np.stack(
+            [
+                vectors_by_repo[row_refs[r][0]].normalized()[row_refs[r][1]]
+                for r in bucket_rows
+            ]
+        )
+        for chunk_start in range(0, len(bucket_rows), BUCKET_CHUNK_ROWS):
+            chunk_end = min(chunk_start + BUCKET_CHUNK_ROWS, len(bucket_rows))
+            sims = sub[chunk_start:chunk_end] @ sub.T
+            for ci in range(chunk_end - chunk_start):
+                i = chunk_start + ci
+                row_a = bucket_rows[i]
+                key_a = keys[row_a]
+                repo_a = row_refs[row_a][0]
+                for j in range(i + 1, len(bucket_rows)):
+                    row_b = bucket_rows[j]
+                    repo_b = row_refs[row_b][0]
+                    if repo_a == repo_b:
+                        continue
+                    score = float(sims[ci, j])
+                    if score < threshold:
+                        continue
+                    key_b = keys[row_b]
+                    candidates[key_a].append((key_b, score))
+                    candidates[key_b].append((key_a, score))
 
     top_candidates: dict[str, set[str]] = {}
     for key, scored in candidates.items():

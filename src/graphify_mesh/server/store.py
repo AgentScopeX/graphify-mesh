@@ -34,10 +34,12 @@ from pathlib import Path
 import numpy as np
 
 from graphify_mesh.server.config import ServerConfig
-from graphify_mesh.sync.embedding import SHARD_MATRIX_SUFFIX
-from graphify_mesh.sync.embedding import SHARD_META_SUFFIX
-from graphify_mesh.sync.embedding import _validate_v2_shard
-from graphify_mesh.sync.embedding import node_key
+from graphify_mesh.sync.embedding import (
+    SHARD_MATRIX_SUFFIX,
+    SHARD_META_SUFFIX,
+    _validate_v2_shard,
+    node_key,
+)
 from graphify_mesh.sync.lexical_index import SUPPORTED_LEXICAL_SCHEMA_VERSIONS
 from graphify_mesh.sync.lexical_index import TOKENIZER_VERSION as EXPECTED_TOKENIZER_VERSION
 from graphify_mesh.sync.publish import output_hash
@@ -185,7 +187,7 @@ def _read_json(path: Path) -> dict | None:
 MAX_SHARD_BYTES = 256 * 1024 * 1024
 
 
-def _load_v1_shard_vectors(shard_path: Path) -> "tuple[str, RepoVectors] | None":
+def _load_v1_shard_vectors(shard_path: Path) -> tuple[str, RepoVectors] | None:
     """v1 shard (`<repo>.json`, entries carry inline `embedding` lists).
     Returns `None` (repo skipped entirely) only when the shard's own
     top-level shape is untrustworthy (oversized, unparseable, not an
@@ -218,7 +220,7 @@ def _load_v1_shard_vectors(shard_path: Path) -> "tuple[str, RepoVectors] | None"
 
 def _load_v2_shard_vectors(
     embeddings_current: Path, repo_id: str, meta_path: Path
-) -> "RepoVectors | None":
+) -> RepoVectors | None:
     """v2 shard (`<repo>.meta.json` + `<repo>.npy`, mmap'd). Returns `None`
     (repo skipped entirely, same documented per-shard degraded mode as the
     v1 oversized-shard skip) whenever the meta/matrix pair fails validation
@@ -296,7 +298,9 @@ def _load_v2_shard_vectors(
     # returned early otherwise) — narrow `list[str | None]` to `list[str]`
     # explicitly so mypy sees what we already know at runtime.
     narrowed_keys: list[str] = [key for key in keys_by_row if key is not None]
-    assert len(narrowed_keys) == len(keys_by_row)
+    if len(narrowed_keys) != len(keys_by_row):
+        log.warning("embeddings: internal row/key narrowing mismatch — skipping shard")
+        return None
 
     # `RepoVectors.from_rows` canonicalizes to the sorted-key invariant:
     # already-sorted `keys_by_row` (the common case — our own writer,

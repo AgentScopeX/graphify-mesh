@@ -272,14 +272,21 @@ def build_manual_relation_edges(
     against the current generation's per-repo graphs — a dangling ref is a
     hard error (raises DanglingReferenceError), not a warning, per plan WS4."""
     edges: list[OverlayEdge] = []
+    index_cache: dict[str, dict] = {}
     for relation in raw_relations:
         source_ref = LogicalRef.from_dict(relation["source"])
         target_ref = LogicalRef.from_dict(relation["target"])
         require_resolved(
-            source_ref, graphs_by_repo, context=f"manual relation source ({relation.get('type')})"
+            source_ref,
+            graphs_by_repo,
+            context=f"manual relation source ({relation.get('type')})",
+            index_cache=index_cache,
         )
         require_resolved(
-            target_ref, graphs_by_repo, context=f"manual relation target ({relation.get('type')})"
+            target_ref,
+            graphs_by_repo,
+            context=f"manual relation target ({relation.get('type')})",
+            index_cache=index_cache,
         )
         edges.append(
             OverlayEdge(

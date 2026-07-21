@@ -120,7 +120,7 @@ def test_build_lexical_index_v3_doc_freq_derivable():
     }
     result = lexical_index.build_lexical_index(graphs_by_repo, {})
     data = result.data
-    for term, entries in data["postings"].items():
+    for _term, entries in data["postings"].items():
         distinct_docs = {p >> 2 for p in entries}
         assert len(distinct_docs) >= 1
         assert max(p >> 2 for p in entries) < len(data["documents"])

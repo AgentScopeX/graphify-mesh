@@ -25,6 +25,7 @@ import logging
 import shutil
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -49,8 +50,9 @@ from graphify_mesh.sync.config import (
 )
 from graphify_mesh.sync.discovery import assert_registry_containment, discover_filesystem, reconcile
 from graphify_mesh.sync.locking import transaction_lock
-from graphify_mesh.sync.registry import Registry, load_registry, registry_hash
+from graphify_mesh.sync.registry import Registry, RepoEntry, load_registry, registry_hash
 from graphify_mesh.sync.state import (
+    SourceDigest,
     compute_source_manifest,
     file_content_hash,
     load_state,
@@ -259,6 +261,13 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
 
     total_active = len(active_repos)
     bar = progress.ProgressBar(total_active, label="indexing")
+    # Actionable repos (update/extract/bootstrap) are collected here and
+    # executed on a bounded thread pool below (Task 7 perf plan). dry-run and
+    # skip rows are cheap and stay fully inline. `apply_action` is
+    # self-contained per repo (own collection_path writes, unique mkstemp
+    # snapshots), so running several concurrently is safe as long as nothing
+    # shared is mutated until after every future has been joined.
+    actionable: list[tuple[int, RepoEntry, Path, str, SourceDigest]] = []
     for i, entry in enumerate(active_repos, start=1):
         root = _root_for(entry, reconciliation.to_dict())
         repo_roots_by_id[entry.repo_id] = root
@@ -289,16 +298,43 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
             bar.tick(i, f"{entry.repo_id}: unchanged")
             continue
 
-        outcome: ProjectOutcome = apply_action(
-            entry.repo_id,
-            settings.graphify_bin,
-            root,
-            entry.collection_path,
-            action,
-            current_manifest,
-        )
-        log.info("[%d/%d] %s: %s (%s)", i, total_active, entry.repo_id, outcome.status, action)
-        bar.tick(i, f"{entry.repo_id}: {outcome.status}")
+        actionable.append((i, entry, root, action, current_manifest))
+
+    outcomes: dict[str, ProjectOutcome] = {}
+    with ThreadPoolExecutor(max_workers=settings.extract_concurrency) as pool:
+        futures = {
+            entry.repo_id: pool.submit(
+                apply_action,
+                entry.repo_id,
+                settings.graphify_bin,
+                root,
+                entry.collection_path,
+                action,
+                current_manifest,
+            )
+            for (i, entry, root, action, current_manifest) in actionable
+        }
+        # Consume futures in submission (sorted-registry) order, NOT
+        # completion order, so logs/progress/report rows/state land in
+        # exactly the same order the sequential loop used to produce.
+        for (i, entry, _root, action, _current_manifest) in actionable:
+            outcomes[entry.repo_id] = futures[entry.repo_id].result()
+            log.info(
+                "[%d/%d] %s: %s (%s)",
+                i,
+                total_active,
+                entry.repo_id,
+                outcomes[entry.repo_id].status,
+                action,
+            )
+            bar.tick(i, f"{entry.repo_id}: {outcomes[entry.repo_id].status}")
+
+    # All shared-structure mutation happens here, single-threaded, strictly
+    # after every future in `actionable` has been joined above — no locking
+    # needed because nothing below runs concurrently with anything else.
+    for (_i, entry, _root, action, _current_manifest) in actionable:
+        outcome = outcomes[entry.repo_id]
+        graph_path = entry.collection_path / "graph.json"
         report.project_actions.append(
             {
                 "repo_id": entry.repo_id,
@@ -363,7 +399,6 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
     tag_to_repo_id = repo_tags.compute_tag_to_repo_id(sorted_graph_paths, sorted_repo_ids)
     graph_data = repo_tags.rewrite_repo_tags(graph_data, tag_to_repo_id)
     previous_manifest = publish.read_current_manifest(settings.global_dir)
-    previous_global_graph = publish.read_current_global_graph(settings.global_dir)
     previous_counts: tuple[int, int] | None = None
     if previous_manifest is not None:
         prev_nodes = previous_manifest.get("output_node_count")
@@ -410,6 +445,7 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
         report.clustering_backend = naming_result.backend
         log.info("naming: %s (backend=%s)", naming_result.labeling, naming_result.backend)
         if naming_result.labeling == naming.LABELING_DEGRADED:
+            previous_global_graph = publish.read_current_global_graph(settings.global_dir)
             graph_data = naming.restore_last_global_community_names(
                 naming_result.graph_data, previous_global_graph
             )
@@ -529,7 +565,8 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
         _finalize(settings, staging_root, report, state, published_data=None, generation_id="")
         return report
 
-    generation_id = publish.make_generation_id(publish.output_hash(graph_data))
+    graph_output_hash = publish.output_hash(graph_data)
+    generation_id = publish.make_generation_id(graph_output_hash)
     created_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     manifest = {
         "generation_id": generation_id,
@@ -541,7 +578,7 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
         "config_hash": config_hash(),
         "output_node_count": len(graph_data.get("nodes", [])),
         "output_edge_count": len(graph_data.get("links", graph_data.get("edges", []))),
-        "output_hash": publish.output_hash(graph_data),
+        "output_hash": graph_output_hash,
         "clustering_backend": report.clustering_backend,
         # C28: real embedding recipe (model/dim/snippet window/skip
         # heuristic), not the pre-WS3 "none" placeholder. `embedding_status`

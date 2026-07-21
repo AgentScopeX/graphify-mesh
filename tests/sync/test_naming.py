@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from graphify_mesh.sync import backend, naming
+from graphify_mesh.sync import backend, graphify_cli, naming, publish
 from graphify_mesh.sync.config import Settings
 from graphify_mesh.sync.pipeline import run
 
@@ -82,13 +82,30 @@ def _settings(tmp_path: Path, **overrides) -> Settings:
 
 
 def test_strip_project_community_attrs_removes_both_keys():
-    stripped = naming.strip_project_community_attrs(_merged_graph())
+    graph = _merged_graph()
+    stripped = naming.strip_project_community_attrs(graph)
     for node in stripped["nodes"]:
         assert "community" not in node
         assert "community_name" not in node
-    # original untouched (pure function)
-    original = _merged_graph()
-    assert original["nodes"][0]["community_name"] == "Alpha Domain"
+    # in-place contract: same object returned, original graph is mutated too
+    assert stripped is graph
+    assert "community_name" not in graph["nodes"][0]
+
+
+def test_strip_mutates_in_place_and_returns_same_object():
+    graph = {"nodes": [{"id": "n1", "community": 3, "community_name": "X", "label": "L"}]}
+    result = naming.strip_project_community_attrs(graph)
+    assert result is graph
+    assert "community" not in graph["nodes"][0]
+    assert "community_name" not in graph["nodes"][0]
+    assert graph["nodes"][0]["label"] == "L"
+
+
+def test_strip_skips_non_dict_nodes():
+    graph = {"nodes": ["junk", {"id": "n1", "community": 1}]}
+    naming.strip_project_community_attrs(graph)
+    assert graph["nodes"][0] == "junk"
+    assert "community" not in graph["nodes"][1]
 
 
 # ---------------------------------------------------------------------------
@@ -262,6 +279,303 @@ def test_partial_change_only_relabels_changed_community(tmp_path, monkeypatch):
     assert label_entries[1]["relabeled_cids"] == [1]
 
 
+def _fail_if_called(*args, **kwargs):
+    pytest.fail("should not have been called: fingerprint-reuse path must skip this")
+
+
+def test_run_naming_reuses_on_matching_fingerprint(tmp_path, monkeypatch):
+    """Second run with an identical stripped graph must reuse the on-disk
+    named graph wholesale: no cluster-only, no label, no health check."""
+    monkeypatch.setenv("FAKE_GRAPHIFY_CONTROL", str(tmp_path / "control.json"))
+    call_log = tmp_path / "call-log.jsonl"
+    monkeypatch.setenv("FAKE_GRAPHIFY_CALL_LOG", str(call_log))
+
+    settings = _settings(tmp_path)
+    naming_dir = tmp_path / "naming"
+    staging_home = tmp_path / "naming-home"
+    stripped = naming.strip_project_community_attrs(_merged_graph())
+
+    first = naming.run_naming(
+        str(FAKE_GRAPHIFY),
+        naming_dir,
+        staging_home,
+        stripped,
+        settings,
+        health_check=lambda *a, **kw: True,
+    )
+    assert first.labeling == naming.LABELING_OK
+    fingerprint_path = naming_dir / "graphify-out" / naming.FINGERPRINT_FILENAME
+    assert fingerprint_path.is_file()
+
+    monkeypatch.setattr(graphify_cli, "run_cluster_only", _fail_if_called)
+    monkeypatch.setattr(graphify_cli, "run_label", _fail_if_called)
+
+    second = naming.run_naming(
+        str(FAKE_GRAPHIFY),
+        naming_dir,
+        staging_home,
+        stripped,
+        settings,
+        health_check=_fail_if_called,
+    )
+
+    assert second.labeling == naming.LABELING_REUSED
+    assert any(n.get("community_name") for n in second.graph_data["nodes"])
+    # The reused NamingResult still carries backend/backend_check — callers
+    # (pipeline.py's manifest writer) read these unconditionally regardless
+    # of which labeling outcome came back.
+    assert second.backend == first.backend
+    assert second.backend_check is not None
+    assert second.backend_check == first.backend_check
+
+
+def test_stale_sidecar_removed_before_crash_can_leave_it_behind(tmp_path, monkeypatch):
+    """Regression test for the stale-sidecar crash window: a full run must
+    unlink any pre-existing (now-stale) fingerprint sidecar BEFORE writing
+    graph.json/running cluster-only+label, so that a crash partway through
+    labeling (subprocess succeeded, python process died before the final
+    OK-path sidecar write) can never leave a sidecar on disk next to a
+    half-labeled graph.json for the next run's reuse gate to wrongly serve."""
+    monkeypatch.setenv("FAKE_GRAPHIFY_CONTROL", str(tmp_path / "control.json"))
+    call_log = tmp_path / "call-log.jsonl"
+    monkeypatch.setenv("FAKE_GRAPHIFY_CALL_LOG", str(call_log))
+
+    settings = _settings(tmp_path)
+    naming_dir = tmp_path / "naming"
+    staging_home = tmp_path / "naming-home"
+    stripped = naming.strip_project_community_attrs(_merged_graph())
+
+    first = naming.run_naming(
+        str(FAKE_GRAPHIFY),
+        naming_dir,
+        staging_home,
+        stripped,
+        settings,
+        health_check=lambda *a, **kw: True,
+    )
+    assert first.labeling == naming.LABELING_OK
+    fingerprint_path = naming_dir / "graphify-out" / naming.FINGERPRINT_FILENAME
+    assert fingerprint_path.is_file()  # stale-to-be sidecar from the "prior good run"
+
+    real_try_reuse = naming._try_reuse_named_graph
+    real_run_label = graphify_cli.run_label
+
+    # Mutate the graph so cluster-only actually detects a changed community
+    # and `label` really gets invoked this run (an unchanged graph would
+    # take the sig-gated "nothing to relabel" shortcut and never call
+    # `label` at all — see test_sig_unchanged_community_not_sent_to_label...).
+    mutated = json.loads(json.dumps(stripped))
+    mutated["nodes"].append(
+        {
+            "id": "example-org.styleguide::a3",
+            "label": "alpha_extra",
+            "repo_tag": "example-org.styleguide",
+        }
+    )
+
+    # Force the full path even though a fingerprint sidecar exists on disk
+    # (e.g. a transient reuse-gate miss), then let `label` genuinely write
+    # names into graph.json before simulating the process dying right
+    # after — before run_naming ever reaches its own OK-path sidecar write.
+    monkeypatch.setattr(naming, "_try_reuse_named_graph", lambda *a, **kw: None)
+
+    def crash_after_label(*args, **kwargs):
+        result = real_run_label(*args, **kwargs)
+        assert result.ok
+        raise RuntimeError("simulated crash: process died right after label wrote names")
+
+    monkeypatch.setattr(graphify_cli, "run_label", crash_after_label)
+
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        naming.run_naming(
+            str(FAKE_GRAPHIFY),
+            naming_dir,
+            staging_home,
+            mutated,
+            settings,
+            health_check=lambda *a, **kw: True,
+        )
+
+    # graph.json really was (partially) relabeled by the real subprocess...
+    written = json.loads(
+        (naming_dir / "graphify-out" / "graph.json").read_text(encoding="utf-8")
+    )
+    assert any(n.get("community_name") for n in written["nodes"])
+    # ...but the stale sidecar from the earlier good run must be gone, even
+    # though the crash happened before the OK-path sidecar write ever ran.
+    assert not fingerprint_path.is_file()
+
+    # Restore real behavior; a subsequent run over the same graph must do a
+    # full run (no sidecar to match) rather than ever reusing the
+    # crash-truncated on-disk graph.
+    monkeypatch.setattr(naming, "_try_reuse_named_graph", real_try_reuse)
+    monkeypatch.setattr(graphify_cli, "run_label", real_run_label)
+
+    entries_before = [
+        json.loads(line) for line in call_log.read_text(encoding="utf-8").splitlines()
+    ]
+    second = naming.run_naming(
+        str(FAKE_GRAPHIFY),
+        naming_dir,
+        staging_home,
+        stripped,
+        settings,
+        health_check=lambda *a, **kw: True,
+    )
+    assert second.labeling == naming.LABELING_OK
+    entries_after = [
+        json.loads(line) for line in call_log.read_text(encoding="utf-8").splitlines()
+    ]
+    new_entries = entries_after[len(entries_before) :]
+    assert any(e["cmd"] == "cluster-only" for e in new_entries)  # a real full run, not reuse
+
+
+def test_reuse_skipped_for_non_object_named_graph_json(tmp_path, monkeypatch):
+    """`graph.json` containing valid-but-non-object JSON (e.g. `[]`) must not
+    crash `_try_reuse_named_graph` — it must fall through to a full naming
+    run instead."""
+    monkeypatch.setenv("FAKE_GRAPHIFY_CONTROL", str(tmp_path / "control.json"))
+    call_log = tmp_path / "call-log.jsonl"
+    monkeypatch.setenv("FAKE_GRAPHIFY_CALL_LOG", str(call_log))
+
+    settings = _settings(tmp_path)
+    naming_dir = tmp_path / "naming"
+    staging_home = tmp_path / "naming-home"
+    stripped = naming.strip_project_community_attrs(_merged_graph())
+
+    out_dir = naming_dir / "graphify-out"
+    out_dir.mkdir(parents=True)
+    fingerprint = publish.output_hash(stripped)
+    (out_dir / naming.FINGERPRINT_FILENAME).write_text(fingerprint + "\n", encoding="utf-8")
+    (out_dir / "graph.json").write_text("[]", encoding="utf-8")
+
+    result = naming.run_naming(
+        str(FAKE_GRAPHIFY),
+        naming_dir,
+        staging_home,
+        stripped,
+        settings,
+        health_check=lambda *a, **kw: True,
+    )
+
+    assert result.labeling == naming.LABELING_OK
+    entries = [json.loads(line) for line in call_log.read_text(encoding="utf-8").splitlines()]
+    assert any(e["cmd"] == "cluster-only" for e in entries)  # full run happened, no crash
+
+
+def test_run_naming_full_run_on_changed_fingerprint(tmp_path, monkeypatch):
+    """A graph that changed since the sidecar was written must take the
+    normal full path — cluster-only + label invoked again."""
+    monkeypatch.setenv("FAKE_GRAPHIFY_CONTROL", str(tmp_path / "control.json"))
+    call_log = tmp_path / "call-log.jsonl"
+    monkeypatch.setenv("FAKE_GRAPHIFY_CALL_LOG", str(call_log))
+
+    settings = _settings(tmp_path)
+    naming_dir = tmp_path / "naming"
+    staging_home = tmp_path / "naming-home"
+    stripped = naming.strip_project_community_attrs(_merged_graph())
+
+    first = naming.run_naming(
+        str(FAKE_GRAPHIFY),
+        naming_dir,
+        staging_home,
+        stripped,
+        settings,
+        health_check=lambda *a, **kw: True,
+    )
+    assert first.labeling == naming.LABELING_OK
+
+    changed = naming.strip_project_community_attrs(json.loads(json.dumps(_merged_graph())))
+    changed["nodes"].append(
+        {
+            "id": "example-org.styleguide::a3",
+            "label": "alpha_extra",
+            "repo_tag": "example-org.styleguide",
+        }
+    )
+
+    entries_before = [
+        json.loads(line) for line in call_log.read_text(encoding="utf-8").splitlines()
+    ]
+
+    second = naming.run_naming(
+        str(FAKE_GRAPHIFY),
+        naming_dir,
+        staging_home,
+        changed,
+        settings,
+        health_check=lambda *a, **kw: True,
+    )
+
+    assert second.labeling == naming.LABELING_OK
+    entries_after = [
+        json.loads(line) for line in call_log.read_text(encoding="utf-8").splitlines()
+    ]
+    new_entries = entries_after[len(entries_before) :]
+    assert any(e["cmd"] == "cluster-only" for e in new_entries)
+
+
+def test_no_sidecar_written_on_degraded_run(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_GRAPHIFY_CONTROL", str(tmp_path / "control.json"))
+    call_log = tmp_path / "call-log.jsonl"
+    monkeypatch.setenv("FAKE_GRAPHIFY_CALL_LOG", str(call_log))
+
+    settings = _settings(tmp_path)
+    naming_dir = tmp_path / "naming"
+    stripped = naming.strip_project_community_attrs(_merged_graph())
+
+    result = naming.run_naming(
+        str(FAKE_GRAPHIFY),
+        naming_dir,
+        tmp_path / "naming-home",
+        stripped,
+        settings,
+        health_check=lambda *a, **kw: False,
+    )
+
+    assert result.labeling == naming.LABELING_DEGRADED
+    fingerprint_path = naming_dir / "graphify-out" / naming.FINGERPRINT_FILENAME
+    assert not fingerprint_path.is_file()
+
+
+def test_reuse_refused_when_named_graph_missing(tmp_path, monkeypatch):
+    """Sidecar matches but the on-disk named graph.json was deleted -> a
+    full naming run happens, never a crash."""
+    monkeypatch.setenv("FAKE_GRAPHIFY_CONTROL", str(tmp_path / "control.json"))
+    call_log = tmp_path / "call-log.jsonl"
+    monkeypatch.setenv("FAKE_GRAPHIFY_CALL_LOG", str(call_log))
+
+    settings = _settings(tmp_path)
+    naming_dir = tmp_path / "naming"
+    staging_home = tmp_path / "naming-home"
+    stripped = naming.strip_project_community_attrs(_merged_graph())
+
+    first = naming.run_naming(
+        str(FAKE_GRAPHIFY),
+        naming_dir,
+        staging_home,
+        stripped,
+        settings,
+        health_check=lambda *a, **kw: True,
+    )
+    assert first.labeling == naming.LABELING_OK
+
+    graph_path = naming_dir / "graphify-out" / "graph.json"
+    graph_path.unlink()
+
+    second = naming.run_naming(
+        str(FAKE_GRAPHIFY),
+        naming_dir,
+        staging_home,
+        stripped,
+        settings,
+        health_check=lambda *a, **kw: True,
+    )
+
+    assert second.labeling == naming.LABELING_OK
+    assert any(n.get("community_name") for n in second.graph_data["nodes"])
+
+
 def test_backend_mismatch_raises_and_never_calls_cluster_only(tmp_path, monkeypatch):
     stub_root = tmp_path / "stub_site"
     (stub_root / "graspologic").mkdir(parents=True)
@@ -340,6 +654,82 @@ def test_pipeline_strip_then_relabel_no_per_project_leakage(env):
     )
     assert manifest["clustering_backend"] == "louvain"
     assert manifest["labeling"] == "ok"
+
+
+def test_previous_global_graph_not_loaded_on_healthy_naming(env, monkeypatch):
+    """The previously published global graph (a full 38K-node JSON parse in
+    production) must only be loaded when naming degrades — the healthy path
+    never needs it."""
+    calls = []
+    real = publish.read_current_global_graph
+
+    def counting(global_dir):
+        calls.append(global_dir)
+        return real(global_dir)
+
+    monkeypatch.setattr(publish, "read_current_global_graph", counting)
+
+    env.add_repo(
+        "example-org.styleguide",
+        "example-org",
+        "styleguide",
+        "styleguide.example-org.dev.lo",
+        "repo_a.json",
+    )
+    env.write_registry()
+    settings = env.settings(ollama_health_check=lambda *a, **kw: True)
+
+    report = run(settings)
+
+    assert report.published
+    assert report.labeling == "ok"
+    assert calls == []
+
+
+def test_previous_global_graph_loaded_once_on_degraded_naming(env, monkeypatch):
+    """The degraded-naming restore path is the only caller of
+    read_current_global_graph, and it must load it exactly once."""
+    env.add_repo(
+        "example-org.styleguide",
+        "example-org",
+        "styleguide",
+        "styleguide.example-org.dev.lo",
+        "repo_a.json",
+    )
+    env.add_repo(
+        "example-org.services",
+        "example-org",
+        "services",
+        "services.example-org.dev.lo",
+        "repo_b.json",
+    )
+    env.write_registry()
+
+    # First (healthy) run establishes a real published global generation to
+    # later restore from — no call-counting here, only on the degraded run.
+    settings_healthy = env.settings(ollama_health_check=lambda *a, **kw: True)
+    first = run(settings_healthy)
+    assert first.published
+    assert first.labeling == "ok"
+
+    root_a = Path([r["root"] for r in env._repos if r["repo_id"] == "example-org.styleguide"][0])
+    (root_a / "touched.py").write_text("# touch\n", encoding="utf-8")
+
+    calls = []
+    real = publish.read_current_global_graph
+
+    def counting(global_dir):
+        calls.append(global_dir)
+        return real(global_dir)
+
+    monkeypatch.setattr(publish, "read_current_global_graph", counting)
+
+    settings_degraded = env.settings(ollama_health_check=lambda *a, **kw: False)
+    second = run(settings_degraded)
+
+    assert second.published
+    assert second.labeling == "degraded"
+    assert len(calls) == 1
 
 
 def test_pipeline_degraded_mode_no_leakage_and_restores_last_global(env):

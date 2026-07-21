@@ -105,18 +105,35 @@ def build_repo_node_index(graph_data: dict) -> dict[tuple[str, str], dict]:
     return index
 
 
-def resolve_ref(ref: LogicalRef, graphs_by_repo: dict[str, dict]) -> dict | None:
+def resolve_ref(
+    ref: LogicalRef,
+    graphs_by_repo: dict[str, dict],
+    index_cache: dict[str, dict] | None = None,
+) -> dict | None:
     """Resolve a logical ref against this generation's per-repo graphs.
     Returns the matching node dict, or None if the repo is unknown this
-    generation or no node matches (source_file, qualified_label)."""
+    generation or no node matches (source_file, qualified_label).
+
+    When `index_cache` is supplied, the per-repo node index is built once
+    and reused across calls sharing the same cache dict (keyed by repo id)
+    instead of being rebuilt from scratch on every call."""
     graph_data = graphs_by_repo.get(ref.repo)
     if graph_data is None:
         return None
-    return build_repo_node_index(graph_data).get((ref.source_file, ref.qualified_label))
+    if index_cache is None:
+        return build_repo_node_index(graph_data).get((ref.source_file, ref.qualified_label))
+    if ref.repo not in index_cache:
+        index_cache[ref.repo] = build_repo_node_index(graph_data)
+    return index_cache[ref.repo].get((ref.source_file, ref.qualified_label))
 
 
-def require_resolved(ref: LogicalRef, graphs_by_repo: dict[str, dict], context: str) -> dict:
-    node = resolve_ref(ref, graphs_by_repo)
+def require_resolved(
+    ref: LogicalRef,
+    graphs_by_repo: dict[str, dict],
+    context: str,
+    index_cache: dict[str, dict] | None = None,
+) -> dict:
+    node = resolve_ref(ref, graphs_by_repo, index_cache)
     if node is None:
         raise DanglingReferenceError(
             f"dangling reference in {context}: repo={ref.repo!r} source_file={ref.source_file!r} "

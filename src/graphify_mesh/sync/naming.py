@@ -37,7 +37,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from graphify_mesh.sync import graphify_cli
+from graphify_mesh.sync import graphify_cli, publish
 from graphify_mesh.sync.backend import BackendCheckResult, assert_pinned_backend
 from graphify_mesh.sync.config import Settings, is_valid_http_base_url
 
@@ -45,6 +45,12 @@ log = logging.getLogger("graphify_mesh.sync.naming")
 
 LABELING_OK = "ok"
 LABELING_DEGRADED = "degraded"
+LABELING_REUSED = "ok (reused: merged-graph fingerprint unchanged)"
+# Canonical-hash sidecar of the STRIPPED merged graph that produced the
+# named graph.json sitting next to it. Written only after a fully
+# successful (LABELING_OK) naming run — reuse is only ever offered against
+# a known-good named graph, never a degraded/partial one.
+FINGERPRINT_FILENAME = ".merged-graph.fingerprint"
 
 HealthCheckFn = Callable[[str, str, float], bool]
 
@@ -95,19 +101,18 @@ def strip_project_community_attrs(graph_data: dict) -> dict:
     own fresh clustering, or — in degraded mode — from the last published
     GLOBAL generation (see pipeline.py's restore step), never from a
     per-project graph.
+
+    Mutates `graph_data` in place and returns the same object — the merged
+    graph is ~38K nodes and a full copy here was a second graph's worth of
+    RAM for nothing; no caller uses the pre-strip dict after this point
+    (see pipeline.py).
     """
-    stripped = dict(graph_data)
-    nodes = []
     for node in graph_data.get("nodes", []):
         if not isinstance(node, dict):
-            nodes.append(node)
             continue
-        new_node = dict(node)
-        new_node.pop("community", None)
-        new_node.pop("community_name", None)
-        nodes.append(new_node)
-    stripped["nodes"] = nodes
-    return stripped
+        node.pop("community", None)
+        node.pop("community_name", None)
+    return graph_data
 
 
 def _read_json_object(path: Path) -> dict:
@@ -125,6 +130,31 @@ def _diff_changed_cids(old_sigs: dict, new_sigs: dict) -> list[str]:
     return sorted(cid for cid, sig in new_sigs.items() if old_sigs.get(cid) != sig)
 
 
+def _try_reuse_named_graph(
+    graph_path: Path, fingerprint_path: Path, fingerprint: str
+) -> dict | None:
+    """Last run's fully-named graph, iff its fingerprint sidecar matches the
+    current stripped merged graph AND the named file still carries at least
+    one community_name (paranoia against a hand-truncated file). None means
+    'do a full naming run'."""
+    if not fingerprint_path.is_file() or not graph_path.is_file():
+        return None
+    try:
+        stored = fingerprint_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if stored != fingerprint:
+        return None
+    named = _read_json_object(graph_path)
+    if not isinstance(named, dict):
+        return None
+    nodes = named.get("nodes", [])
+    named_count = sum(1 for n in nodes if isinstance(n, dict) and n.get("community_name"))
+    if not nodes or named_count == 0:
+        return None
+    return named
+
+
 def run_naming(
     graphify_bin: str,
     naming_dir: Path,
@@ -134,6 +164,24 @@ def run_naming(
     health_check: HealthCheckFn | None = None,
 ) -> NamingResult:
     backend_check = assert_pinned_backend(graphify_bin)
+
+    out_dir = naming_dir / "graphify-out"
+    graph_path = out_dir / "graph.json"
+    fingerprint_path = out_dir / FINGERPRINT_FILENAME
+    fingerprint = publish.output_hash(merged_graph_data)
+
+    reused = _try_reuse_named_graph(graph_path, fingerprint_path, fingerprint)
+    if reused is not None:
+        log.info(
+            "naming: merged-graph fingerprint unchanged — reusing on-disk names, "
+            "skipping cluster-only + label (no Ollama calls)"
+        )
+        return NamingResult(
+            labeling=LABELING_REUSED,
+            graph_data=reused,
+            backend=backend_check.backend,
+            backend_check=backend_check,
+        )
 
     # URL scheme gate BEFORE any health check runs: a base URL that is not
     # plain http(s)-with-host (file://, gopher://, ...) fails this stage's
@@ -170,13 +218,16 @@ def run_naming(
             backend_check=backend_check,
         )
 
-    out_dir = naming_dir / "graphify-out"
     out_dir.mkdir(parents=True, exist_ok=True)
-    graph_path = out_dir / "graph.json"
+    # Any crash between here and the OK-path sidecar write must leave no
+    # sidecar matching a half-labeled (or fully unlabeled) graph.json on
+    # disk — otherwise the next run's reuse gate would serve a stale,
+    # partially-named graph as if it were complete.
+    fingerprint_path.unlink(missing_ok=True)
     # Overwrite this run's graph, but leave any pre-existing
     # .graphify_labels.json / .sig from a prior run in place — that is
     # exactly what makes sig-gated label reuse possible across runs.
-    graph_path.write_text(json.dumps(merged_graph_data, indent=2), encoding="utf-8")
+    graph_path.write_text(json.dumps(merged_graph_data), encoding="utf-8")
 
     labels_path = out_dir / ".graphify_labels.json"
     sig_path = out_dir / ".graphify_labels.json.sig"
@@ -263,6 +314,8 @@ def run_naming(
             reason="graphify cluster-only/label exited 0 but wrote no community_name onto any node",
             backend_check=backend_check,
         )
+
+    fingerprint_path.write_text(fingerprint + "\n", encoding="utf-8")
 
     return NamingResult(
         labeling=LABELING_OK,

@@ -191,7 +191,7 @@ class RepoShard:
     vectors: RepoVectors = field(default_factory=RepoVectors.empty)
 
     @classmethod
-    def empty(cls) -> "RepoShard":
+    def empty(cls) -> RepoShard:
         return cls(entries={}, vectors=RepoVectors.empty())
 
 
@@ -394,7 +394,7 @@ def compute_repo_shard(
     # key -> vector (list[float] for freshly-embedded, ndarray row for
     # reused-from-previous) collected before the final RepoVectors matrix is
     # built, so reused rows pass straight through without a list copy.
-    vector_sources: dict[str, "list[float] | np.ndarray"] = {}
+    vector_sources: dict[str, list[float] | np.ndarray] = {}
     to_embed_keys: list[str] = []
     to_embed_inputs: list[str] = []
 
@@ -410,7 +410,11 @@ def compute_repo_shard(
         digest = _content_hash(input_text)
         prev_entry = previous_shard.entries.get(key)
         prev_vector = previous_shard.vectors.get(key)
-        if prev_entry is not None and prev_entry.get("content_hash") == digest and prev_vector is not None:
+        if (
+            prev_entry is not None
+            and prev_entry.get("content_hash") == digest
+            and prev_vector is not None
+        ):
             entries[key] = {"content_hash": digest, "row": None}  # row filled in below
             vector_sources[key] = prev_vector
             stats.reused += 1
@@ -506,7 +510,7 @@ def _shard_matrix_filename(repo_id: str) -> str:
     return f"{repo_id}{SHARD_MATRIX_SUFFIX}"
 
 
-def _load_shard_matrix(matrix_path: Path, repo_id: str) -> "np.ndarray | None":
+def _load_shard_matrix(matrix_path: Path, repo_id: str) -> np.ndarray | None:
     """Loads the v2 matrix file mmap'd (read-only). Missing/corrupt matrix
     alongside a meta file is not a hard failure — it just means the previous
     shard is treated as empty, which forces a full re-embed this run (safe,
@@ -559,7 +563,7 @@ def _read_v1_shard(shard_path: Path) -> RepoShard:
     return RepoShard(entries=entries, vectors=vectors)
 
 
-def _validate_v2_shard(meta: dict, matrix: "np.ndarray") -> str | None:
+def _validate_v2_shard(meta: dict, matrix: np.ndarray) -> str | None:
     """Validates a v2 shard's meta + matrix BEFORE any RepoVectors is built
     from them. Returns a human-readable reason string on the first violation
     found (guard-clause chain, cheapest checks first), or `None` if the
@@ -626,7 +630,11 @@ def _read_v2_shard(current_dir: Path, repo_id: str, meta_path: Path) -> RepoShar
     try:
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-        log.warning("%s: corrupt shard meta at %s — treating previous shard as empty", repo_id, meta_path)
+        log.warning(
+            "%s: corrupt shard meta at %s — treating previous shard as empty",
+            repo_id,
+            meta_path,
+        )
         return RepoShard.empty()
 
     if not isinstance(meta, dict):
@@ -664,7 +672,8 @@ def _read_v2_shard(current_dir: Path, repo_id: str, meta_path: Path) -> RepoShar
 
     if any(key is None for key in keys_by_row):
         log.warning(
-            "%s: shard matrix has rows with no owning entry in %s — treating previous shard as empty",
+            "%s: shard matrix has rows with no owning entry in %s"
+            " — treating previous shard as empty",
             repo_id,
             meta_path,
         )
@@ -674,7 +683,12 @@ def _read_v2_shard(current_dir: Path, repo_id: str, meta_path: Path) -> RepoShar
     # returned early otherwise) — narrow `list[str | None]` to `list[str]`
     # explicitly so mypy sees what we already know at runtime.
     narrowed_keys: list[str] = [key for key in keys_by_row if key is not None]
-    assert len(narrowed_keys) == len(keys_by_row)
+    if len(narrowed_keys) != len(keys_by_row):
+        # Unreachable by construction (the `any(... is None)` guard above
+        # returned early) — kept as a guard clause instead of an assert so
+        # -O builds and bandit S101 both stay honest.
+        log.warning("%s: internal row/key narrowing mismatch — treating shard as empty", repo_id)
+        return RepoShard.empty()
 
     vectors = RepoVectors.from_rows(narrowed_keys, matrix)
     return RepoShard(entries=entries, vectors=vectors)
