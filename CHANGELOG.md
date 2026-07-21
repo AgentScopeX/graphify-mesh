@@ -1,9 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.0.6
 
 ### Performance
 
+- Changed: the naming stage relabels only communities whose membership
+  fingerprint changed, instead of re-labeling every community each run;
+  per-project extraction runs in a bounded parallel pool — together roughly
+  3x lower sync wall time.
+- Changed: lexical index schema v3 and embedding vectors stored as `.npy`
+  shards (memory-mappable by the server) to cut sync peak RSS.
 - Changed: all large published artifacts (`global-graph.json`,
   `cross-project-overlay.json`, `lexical-index.json`) are written via streamed
   `JSONEncoder.iterencode` with compact separators instead of a whole-artifact
@@ -93,32 +99,36 @@
 - Added: `dev` extra (`test` + `lint`); shared test fixtures consolidated
   under `tests/fixtures/`.
 
+## 0.0.5
+
+- Changed: package version is derived from git tags via `hatch-vcs` instead
+  of a hand-maintained `__version__`.
+- Added: release-time guard that rejects a release whose tag and resolved
+  package version disagree.
+- Changed: GitHub Actions steps bumped to current action versions.
+
 ## 0.0.4
 
-- Fixed: `__version__` had been left at 0.0.2 across the v0.0.3/v0.0.4 tags;
-  corrected in this release.
+- Fixed: `__version__` reported 0.0.2 regardless of the installed release.
 - Fixed: unbounded disk growth — structural generation directories
-  (`global-graph.json` + overlay + lexical-index, 200-500MB each) had zero GC.
-  A scheduled sync accumulates one full generation per run forever. Added
-  `publish.prune_old_generations` (keeps last 2, matches the embeddings GC
-  convention), also detects and removes generations left dangling by an
-  interrupted publish (e.g. an OOM-killed run mid-write).
-- Fixed: real OOM kills in production — `build_lexical_index` stored every
-  postings entry as a `{"repo","key","field","weight"}` dict (weight is pure
-  redundant lookup of a 3-entry constant) and held both the raw accumulation
-  structure and the fully-materialized output simultaneously in memory.
-  Switched to compact `[repo, key, field]` arrays, dedup-during-accumulation,
-  and pop-as-converted instead of holding both copies — measured ~43% peak
-  memory reduction and ~18-19% smaller on-disk index on fixture benchmarks.
-  Lexical-index schema bumped to v2; the MCP server now rejects a
-  stale-shaped (v1) index instead of silently misreading it.
+  (`global-graph.json` + overlay + lexical-index, 200-500MB each) were never
+  garbage-collected, accumulating one per sync run. Added
+  `publish.prune_old_generations` (keeps last 2, matching the embeddings GC
+  convention); it also removes generations left dangling by an interrupted
+  publish.
+- Fixed: excessive peak memory in `build_lexical_index` — postings were
+  stored as `{"repo","key","field","weight"}` dicts (weight derivable from a
+  3-entry constant) with the raw accumulation structure and the materialized
+  output held simultaneously. Switched to compact `[repo, key, field]`
+  arrays, dedup-during-accumulation, and pop-as-converted — ~43% lower peak
+  memory and ~18-19% smaller on-disk index on fixture benchmarks.
+  Lexical-index schema bumped to v2; the MCP server rejects a v1-shaped
+  index instead of silently misreading it.
 - Hardened: `_write_json_atomic` now fsyncs file data before the rename, so
   an interrupted write can't leave a durable-rename but garbage-content file
   behind an already-flipped `current`.
 
 ## 0.0.2
-
-Fixes found and verified via a real production run against a live Ollama backend.
 
 - Fixed: `--skip-labeling` never actually gated the naming stage — it only
   affected a log message and a validation bypass, so `graphify cluster-only`/
@@ -138,10 +148,9 @@ Fixes found and verified via a real production run against a live Ollama backend
   print "Done" and exit 0, yet silently write zero `community_name` values.
   `run_naming` now verifies real names actually landed before reporting
   `LABELING_OK`, degrading instead of returning a false success.
-- Added: real per-repo and per-batch progress logging for the sync/naming/
+- Added: per-repo and per-batch progress logging for the sync/naming/
   embedding stages (previously silent for the full run duration).
-- Regression tests added for all three fixes above, each verified to fail
-  against the pre-fix code and pass against the fix.
+- Added: regression tests for the three fixes above.
 
 ## 0.0.1
 
