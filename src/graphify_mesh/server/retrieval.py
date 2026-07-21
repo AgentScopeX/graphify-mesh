@@ -11,10 +11,13 @@ import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+import numpy as np
+
+from graphify_mesh.server import lexical_read
 from graphify_mesh.server import ranking
 from graphify_mesh.server.store import Generation
-from graphify_mesh.sync.embed_similarity import cosine_similarity
 from graphify_mesh.sync.lexical_index import normalize_alias_query, tokenize_text
+from graphify_mesh.sync.vectors import RepoVectors
 
 EmbedQueryFn = Callable[[str], list[float] | None]
 
@@ -41,20 +44,13 @@ class RankedResult:
 
 def exact_alias_hits(query: str, lexical: dict, repo_filter: frozenset[str] | None) -> list[str]:
     """Exact FQCN/label bypass candidates (WS5 fusion contract): looked up
-    via the lexical index's O(1) `alias_exact` table, normalized with the
-    SAME normalization the index was built with (`normalize_alias_query`).
-
-    Entries are the schema_version 2 compact `[repo, key]` array shape
-    (not the old `{"repo": r, "key": k}` dict) — see `lexical_index.py`."""
+    through the version-aware lexical reader, normalized with the SAME
+    normalization the index was built with (`normalize_alias_query`)."""
     if not query or not query.strip():
         return []
     norm = normalize_alias_query(query.strip())
-    entries = lexical.get("alias_exact", {}).get(norm, [])
-    keys = {
-        e[1]
-        for e in entries
-        if isinstance(e, list) and len(e) == 2 and (repo_filter is None or e[0] in repo_filter)
-    }
+    refs = lexical_read.alias_refs(lexical, norm)
+    keys = {key for repo, key in refs if repo_filter is None or repo in repo_filter}
     return sorted(keys)
 
 
@@ -64,28 +60,19 @@ def lexical_candidates(
     repo_filter: frozenset[str] | None,
     depth: int = ranking.CANDIDATE_DEPTH_LEXICAL,
 ) -> list[str]:
-    """Postings entries are the schema_version 2 compact `[repo, key, field]`
-    array shape. `weight` is no longer stored per-entry — it is derived from
-    the bundle's own `field_boosts` table so this reader stays decoupled
-    from the writer's internal `FIELD_BOOSTS` constant name."""
+    """Rank lexical candidates using version-aware postings and document metadata."""
     tokens = tokenize_text(query)
     if not tokens:
         return []
-    postings = lexical.get("postings", {})
-    doc_freq_global = lexical.get("doc_freq", {}).get("global", {})
-    total_docs = max(lexical.get("document_count", 1), 1)
+    total_docs = max(lexical_read.document_count(lexical), 1)
     field_boosts = lexical.get("field_boosts", {})
 
     scores: dict[str, float] = {}
     for term in tokens:
-        entries = postings.get(term, [])
-        df = doc_freq_global.get(term, len(entries)) or 1
+        triples = lexical_read.term_postings(lexical, term)
+        df = lexical_read.term_doc_freq(lexical, term) or 1
         idf = math.log(1 + (total_docs / df))
-        for entry in entries:
-            if not isinstance(entry, list) or len(entry) != 3:
-                # Malformed index entry: tolerate and skip, never crash.
-                continue
-            repo, key, field_name = entry
+        for repo, key, field_name in triples:
             if repo_filter is not None and repo not in repo_filter:
                 continue
             if key is None:
@@ -97,9 +84,20 @@ def lexical_candidates(
     return [k for k, _ in ranked[:depth]]
 
 
+def _repo_scores(repo_vectors: RepoVectors, normalized_query: np.ndarray) -> np.ndarray:
+    """Per-repo cosine scores against an already-normalized query vector.
+    Mixed-dimension shard vs query carries no comparable signal (same rule
+    `cosine_similarity` applied per key) — every key in that repo scores 0
+    rather than being dropped from the pool, so it still tie-breaks by key
+    like the old per-key comparison did."""
+    if repo_vectors.dim != normalized_query.shape[0]:
+        return np.zeros(len(repo_vectors), dtype=np.float32)
+    return repo_vectors.normalized() @ normalized_query
+
+
 def vector_candidates(
     query: str,
-    embeddings: dict[str, dict[str, list[float]]],
+    embeddings: dict[str, RepoVectors],
     repo_filter: frozenset[str] | None,
     embed_query_fn: EmbedQueryFn,
     depth: int = ranking.CANDIDATE_DEPTH_VECTOR,
@@ -108,19 +106,40 @@ def vector_candidates(
     retriever contributed nothing this call (no embeddings published this
     generation, or the query-embed call failed) — the caller renormalizes
     fusion over whichever OTHER retrievers succeeded and must surface
-    `"embeddings_unavailable"` in the response's `degraded` field."""
+    `"embeddings_unavailable"` in the response's `degraded` field.
+
+    Scoring is matrix cosine similarity per repo: each `RepoVectors`
+    matrix's L2-normalized copy is cached on the instance
+    (`RepoVectors.normalized()`, computed once per process no matter how
+    many queries hit it this session) and multiplied against the
+    L2-normalized query vector in one `@` call — equivalent to calling
+    `cosine_similarity` per key, just batched over the whole repo instead
+    of a Python-level loop.
+    """
     if not embeddings:
         return [], True
     vector = embed_query_fn(query)
     if not vector:
         return [], True
 
+    query_vec = np.asarray(vector, dtype=np.float32)
+    query_norm = float(np.linalg.norm(query_vec))
+    # Mirror `cosine_similarity`'s own zero-vector rule (score 0 rather
+    # than raising/NaN) via a safe divisor instead of skipping the whole
+    # query — a literal all-zero query vector should still tie-break by
+    # key, exactly like the old per-key comparison did.
+    safe_query_norm = query_norm if query_norm != 0.0 else 1.0
+    normalized_query = query_vec / safe_query_norm
+
     scored: list[tuple[str, float]] = []
-    for repo_id, shard in embeddings.items():
+    for repo_id, repo_vectors in embeddings.items():
         if repo_filter is not None and repo_id not in repo_filter:
             continue
-        for key, vec in shard.items():
-            scored.append((key, cosine_similarity(vector, vec)))
+        if len(repo_vectors) == 0:
+            continue
+        scores = _repo_scores(repo_vectors, normalized_query)
+        for key, score in zip(repo_vectors.keys, scores):
+            scored.append((key, float(score)))
     scored.sort(key=lambda kv: (-kv[1], kv[0]))
     return [k for k, _ in scored[:depth]], False
 

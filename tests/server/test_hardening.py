@@ -13,7 +13,7 @@ from conftest import build_generation, fake_embed_query_fn, make_node, registry_
 
 from graphify_mesh.server import protocol
 from graphify_mesh.server.config import ServerConfig
-from graphify_mesh.server.retrieval import lexical_candidates
+from graphify_mesh.server.retrieval import exact_alias_hits, lexical_candidates
 from graphify_mesh.server.server import MAX_K, MAX_TOKEN_BUDGET, GraphifyMeshServer
 
 
@@ -209,13 +209,29 @@ def test_lexical_entry_missing_key_is_tolerated():
             make_node("acme.repo", "OrderRepository", "src/order_repo.py", node_id="n2"),
         ]
     )
-    # Corrupt every posting list with a malformed (wrong-length) entry —
-    # schema_version 2 entries are `[repo, key, field]` compact arrays.
+    # Corrupt every posting list with a malformed entry — schema_version 3
+    # entries are int-packed `(doc_id << FIELD_PACK_BITS) | field_index`
+    # values, so a stray list here is the wrong shape and must be skipped.
     for entries in generation.lexical.get("postings", {}).values():
         entries.append(["acme.repo"])
 
     ranked = lexical_candidates("OrderService", generation.lexical, None)
     assert ranked  # real entries still rank; malformed one is skipped
+
+
+def test_lexical_candidates_and_alias_hits_still_serve_v2_generation():
+    """A published v2 generation must keep serving after deploy (publish can
+    lag behind package upgrade — e.g. shrink-guard blocking)."""
+    v2 = {
+        "schema_version": 2,
+        "field_boosts": {"label": 3.0, "path": 1.5, "snippet": 1.0},
+        "postings": {"alphaclass": [["repoA", "keyA1", "label"]]},
+        "doc_freq": {"global": {"alphaclass": 1}, "per_repo": {}},
+        "alias_exact": {"alphaclass": [["repoA", "keyA1"]]},
+        "document_count": 1,
+    }
+    assert exact_alias_hits("AlphaClass", v2, None) == ["keyA1"]
+    assert lexical_candidates("AlphaClass", v2, None) == ["keyA1"]
 
 
 def test_search_tool_survives_malformed_lexical_entry(tmp_path, monkeypatch):

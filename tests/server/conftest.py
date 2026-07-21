@@ -13,6 +13,7 @@ if str(_BIN_DIR) not in sys.path:
 from graphify_mesh.server.store import Generation  # noqa: E402
 from graphify_mesh.sync.embedding import node_key  # noqa: E402
 from graphify_mesh.sync.lexical_index import build_lexical_index  # noqa: E402
+from graphify_mesh.sync.vectors import RepoVectors  # noqa: E402
 
 
 def make_node(repo, label, source_file, node_id=None, line=1, community_name=None, **extra) -> dict:
@@ -42,15 +43,16 @@ def build_generation(
     nodes: list[dict],
     links: list[dict] | None = None,
     overlay_edges: list[dict] | None = None,
-    embeddings: dict[str, dict[str, list[float]]] | None = None,
+    embeddings: dict[str, RepoVectors] | None = None,
     generation_id: str = "gen-test-1",
     manifest_extra: dict | None = None,
 ) -> Generation:
     """Builds a fully-indexed, in-memory `Generation` from synthetic nodes —
     no disk I/O, no real project data. The lexical index is built with the
     REAL `graphify_mesh.sync.lexical_index.build_lexical_index` (not a hand-rolled
-    stub) so postings/alias_exact/doc_freq shapes are exactly what
-    production code produces."""
+    stub) so postings/alias_exact/documents/fields shapes are exactly what
+    production code produces (current schema: v3 int-packed postings, no
+    stored `doc_freq` — the reader derives it from distinct doc ids)."""
     graph = {"nodes": nodes, "links": links or []}
     graphs_by_repo: dict[str, dict] = {}
     for node in nodes:

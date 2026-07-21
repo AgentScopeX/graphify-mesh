@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from graphify_mesh.server import lexical_read
 from graphify_mesh.server import ranking
 from graphify_mesh.server.retrieval import Hit, _hit_from_key
 from graphify_mesh.server.store import Generation
@@ -41,14 +42,12 @@ class SimilarResult:
 
 
 def resolve_key(query: str, generation: Generation) -> str | None:
-    """`alias_exact` entries are the schema_version 2 compact `[repo, key]`
-    array shape (see `lexical_index.py`)."""
+    """Resolve a query through version-aware exact-alias lookup."""
     norm = normalize_alias_query(query.strip()) if query else ""
-    entries = generation.lexical.get("alias_exact", {}).get(norm, [])
-    keys = sorted(e[1] for e in entries if isinstance(e, list) and len(e) == 2)
-    if keys:
-        return keys[0]
-    return None
+    keys = sorted(key for _, key in lexical_read.alias_refs(generation.lexical, norm))
+    if not keys:
+        return None
+    return keys[0]
 
 
 def overlay_similar_pairs(key: str, generation: Generation) -> list[tuple[str, float, str]]:

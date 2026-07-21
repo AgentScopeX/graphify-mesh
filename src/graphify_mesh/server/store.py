@@ -31,14 +31,18 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import numpy as np
+
 from graphify_mesh.server.config import ServerConfig
+from graphify_mesh.sync.embedding import SHARD_MATRIX_SUFFIX
+from graphify_mesh.sync.embedding import SHARD_META_SUFFIX
+from graphify_mesh.sync.embedding import _validate_v2_shard
 from graphify_mesh.sync.embedding import node_key
-from graphify_mesh.sync.lexical_index import (
-    LEXICAL_SCHEMA_VERSION as EXPECTED_LEXICAL_SCHEMA_VERSION,
-)
+from graphify_mesh.sync.lexical_index import SUPPORTED_LEXICAL_SCHEMA_VERSIONS
 from graphify_mesh.sync.lexical_index import TOKENIZER_VERSION as EXPECTED_TOKENIZER_VERSION
 from graphify_mesh.sync.publish import output_hash
 from graphify_mesh.sync.validate import validate_generation_manifest
+from graphify_mesh.sync.vectors import RepoVectors
 
 log = logging.getLogger("graphify_mesh.server.store")
 
@@ -55,7 +59,7 @@ class Generation:
     graph: dict
     overlay: dict
     lexical: dict
-    embeddings: dict[str, dict[str, list[float]]]  # repo_id -> {node_key: vector}
+    embeddings: dict[str, RepoVectors]  # repo_id -> RepoVectors (sorted-key float32 matrix)
     node_by_id: dict = field(default_factory=dict)
     nodes_by_repo: dict = field(default_factory=dict)
     adjacency: dict = field(default_factory=dict)  # node_id -> list[(neighbor_id, edge_data)]
@@ -144,10 +148,10 @@ def validate_manifest_consistency(manifest: dict, graph: dict, lexical: dict) ->
             f"lexical-index: manifest schema_version={manifest_schema!r} != "
             f"lexical-index.json schema_version={lexical_schema!r}"
         )
-    if lexical_schema is not None and lexical_schema != EXPECTED_LEXICAL_SCHEMA_VERSION:
+    if lexical_schema is not None and lexical_schema not in SUPPORTED_LEXICAL_SCHEMA_VERSIONS:
         errors.append(
             f"lexical-index: schema_version={lexical_schema!r} is not a version this server "
-            f"understands (expected {EXPECTED_LEXICAL_SCHEMA_VERSION!r}) — "
+            f"understands (supported: {sorted(SUPPORTED_LEXICAL_SCHEMA_VERSIONS)}) — "
             "refusing to serve stale-shaped index"
         )
     return errors
@@ -158,41 +162,190 @@ def _read_json(path: Path) -> dict | None:
         return None
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return None
 
 
 # Per-shard byte ceiling for the read side. Shards are produced by our own
 # sync pipeline, but the server must not OOM on a corrupt or hand-edited
 # shard file — skipping one repo's vectors is the documented degraded mode
-# (vector channel drops out, lexical/structural still serve).
+# (vector channel drops out, lexical/structural still serve). This gate
+# applies to the `.json`/`.meta.json` reads below (both are read whole into
+# memory via `_read_json`). It is deliberately NOT applied to the v2
+# `.npy` matrix file itself: that is opened with `np.load(..., mmap_mode="r")`,
+# which avoids eager load-time allocation, so merely opening an oversized
+# `.npy` cannot OOM this process the way an oversized JSON blob can. That
+# said, this is not a blanket safety guarantee for the whole v2 read path —
+# `RepoVectors.normalized()` (see server/retrieval.py) still materializes
+# one full float32 copy of the matrix at query time, so an absurdly
+# oversized `.npy` could still cost real RAM there. No size ceiling is
+# enforced on that path deliberately: unlike a hand-edited/corrupt JSON
+# shard, the `.npy` matrix is produced only by our own sync pipeline, not
+# arbitrary input.
 MAX_SHARD_BYTES = 256 * 1024 * 1024
 
 
-def _load_embeddings(embeddings_current: Path) -> dict[str, dict[str, list[float]]]:
+def _load_v1_shard_vectors(shard_path: Path) -> "tuple[str, RepoVectors] | None":
+    """v1 shard (`<repo>.json`, entries carry inline `embedding` lists).
+    Returns `None` (repo skipped entirely) only when the shard's own
+    top-level shape is untrustworthy (oversized, unparseable, not an
+    object, or `entries` not a dict) — an individual malformed entry is
+    dropped on its own without invalidating the rest of the shard."""
+    try:
+        if shard_path.stat().st_size > MAX_SHARD_BYTES:
+            log.warning(
+                "%s: shard exceeds MAX_SHARD_BYTES — skipping this repo's vectors", shard_path
+            )
+            return None
+    except OSError:
+        return None
+
+    data = _read_json(shard_path)
+    if not isinstance(data, dict):
+        return None
+    repo_id = data.get("repo_id", shard_path.stem)
+    entries = data.get("entries", {})
+    if not isinstance(entries, dict):
+        return None
+
+    vector_sources = {
+        key: entry["embedding"]
+        for key, entry in entries.items()
+        if isinstance(entry, dict) and entry.get("embedding")
+    }
+    return repo_id, RepoVectors.from_mapping(vector_sources)
+
+
+def _load_v2_shard_vectors(
+    embeddings_current: Path, repo_id: str, meta_path: Path
+) -> "RepoVectors | None":
+    """v2 shard (`<repo>.meta.json` + `<repo>.npy`, mmap'd). Returns `None`
+    (repo skipped entirely, same documented per-shard degraded mode as the
+    v1 oversized-shard skip) whenever the meta/matrix pair fails validation
+    — reuses `graphify_mesh.sync.embedding._validate_v2_shard` so the read
+    side trusts the exact same shape checks (shard_format allowlist, dim
+    match, row range, duplicate rows) the sync side already enforces on
+    write."""
+    try:
+        if meta_path.stat().st_size > MAX_SHARD_BYTES:
+            log.warning(
+                "%s: shard meta %s exceeds MAX_SHARD_BYTES — skipping this repo's vectors",
+                repo_id,
+                meta_path,
+            )
+            return None
+    except OSError:
+        return None
+
+    meta = _read_json(meta_path)
+    if not isinstance(meta, dict):
+        log.warning(
+            "%s: shard meta at %s is not a JSON object — skipping this repo's vectors",
+            repo_id,
+            meta_path,
+        )
+        return None
+
+    matrix_path = embeddings_current / f"{repo_id}{SHARD_MATRIX_SUFFIX}"
+    if not matrix_path.is_file():
+        log.warning(
+            "%s: v2 shard meta present but matrix missing at %s — skipping this repo's vectors",
+            repo_id,
+            matrix_path,
+        )
+        return None
+    try:
+        matrix = np.load(matrix_path, mmap_mode="r")
+    except (OSError, ValueError) as exc:
+        log.warning(
+            "%s: failed to load shard matrix %s (%s) — skipping this repo's vectors",
+            repo_id,
+            matrix_path,
+            exc,
+        )
+        return None
+
+    invalid_reason = _validate_v2_shard(meta, matrix)
+    if invalid_reason is not None:
+        log.warning(
+            "%s: invalid v2 shard in %s (%s) — skipping this repo's vectors",
+            repo_id,
+            meta_path,
+            invalid_reason,
+        )
+        return None
+
+    entries: dict[str, dict] = meta["entries"]
+    n_rows = matrix.shape[0]
+    keys_by_row: list[str | None] = [None] * n_rows
+    for key, entry in entries.items():
+        row = entry.get("row")
+        if row is None:
+            continue
+        keys_by_row[row] = key
+
+    if any(key is None for key in keys_by_row):
+        log.warning(
+            "%s: shard matrix has rows with no owning entry in %s — skipping this repo's vectors",
+            repo_id,
+            meta_path,
+        )
+        return None
+
+    # Every row was assigned a key above (the `any(... is None)` guard
+    # returned early otherwise) — narrow `list[str | None]` to `list[str]`
+    # explicitly so mypy sees what we already know at runtime.
+    narrowed_keys: list[str] = [key for key in keys_by_row if key is not None]
+    assert len(narrowed_keys) == len(keys_by_row)
+
+    # `RepoVectors.from_rows` canonicalizes to the sorted-key invariant:
+    # already-sorted `keys_by_row` (the common case — our own writer,
+    # `stage_embeddings`, always serializes rows in sorted-key order) keeps
+    # the mmap array as-is (zero-copy); out-of-order rows (a hand-edited or
+    # otherwise out-of-band-written shard) get argsort-permuted, at the
+    # cost of materializing a full copy for this one repo. Shared with the
+    # sync-side reader (`graphify_mesh.sync.embedding._read_v2_shard`) so
+    # this canonicalization logic exists exactly once.
+    return RepoVectors.from_rows(narrowed_keys, matrix)
+
+
+def _load_embeddings(embeddings_current: Path) -> dict[str, RepoVectors]:
+    """Loads this generation's per-repo embedding shards. Two on-disk shard
+    formats are supported side by side: the sync pipeline now writes v2
+    shards (`<repo>.meta.json` + mmap'd `<repo>.npy`); older publishes (or
+    a generation produced before this server understood v2) may still have
+    v1 plain-JSON shards (`<repo>.json`) on disk. Per repo: v2 wins if its
+    meta file is present, else fall back to the v1 file. A shard that fails
+    validation is skipped for its repo only (documented per-shard degraded
+    mode) — the vector channel drops that one repo, everything else
+    (lexical, structural, and every other repo's vectors) still serves.
+    """
     if not embeddings_current.is_dir():
         return {}
-    out: dict[str, dict[str, list[float]]] = {}
+
+    out: dict[str, RepoVectors] = {}
+    v2_repo_ids: set[str] = set()
+
+    for meta_path in sorted(embeddings_current.glob(f"*{SHARD_META_SUFFIX}")):
+        repo_id = meta_path.name[: -len(SHARD_META_SUFFIX)]
+        v2_repo_ids.add(repo_id)
+        vectors = _load_v2_shard_vectors(embeddings_current, repo_id, meta_path)
+        if vectors is not None:
+            out[repo_id] = vectors
+
     for shard_path in sorted(embeddings_current.glob("*.json")):
         if shard_path.name == "id-map.json":
             continue
-        try:
-            if shard_path.stat().st_size > MAX_SHARD_BYTES:
-                continue
-        except OSError:
+        if shard_path.name.endswith(SHARD_META_SUFFIX):
             continue
-        data = _read_json(shard_path)
-        if not isinstance(data, dict):
+        if shard_path.stem in v2_repo_ids:
+            continue  # v2 shard already loaded for this repo — v2 wins
+        loaded = _load_v1_shard_vectors(shard_path)
+        if loaded is None:
             continue
-        repo_id = data.get("repo_id", shard_path.stem)
-        entries = data.get("entries", {})
-        if not isinstance(entries, dict):
-            continue
-        out[repo_id] = {
-            k: v["embedding"]
-            for k, v in entries.items()
-            if isinstance(v, dict) and v.get("embedding")
-        }
+        repo_id, vectors = loaded
+        out[repo_id] = vectors
+
     return out
 
 
@@ -231,7 +384,29 @@ class GenerationStore:
         manifest = _read_json(current / "generation-manifest.json")
         graph = _read_json(current / "global-graph.json")
         overlay = _read_json(current / "cross-project-overlay.json") or {"edges": []}
-        lexical = _read_json(current / "lexical-index.json") or {}
+
+        # `_read_json` conflates "file missing" and "file present but
+        # unparseable" into the same `None` — both are NOT the same state
+        # here. Missing lexical-index.json is the documented degraded mode
+        # (vector-style absence: lexical drops out, structural still
+        # serves) and must not produce a validation error. Present-but-
+        # corrupt (unparseable JSON, or parseable but not an object) is a
+        # real artifact problem and must be surfaced as a validation error
+        # alongside `validate_manifest_consistency`'s own errors.
+        lexical_path = current / "lexical-index.json"
+        lexical_raw = _read_json(lexical_path)
+        lexical_error: str | None = None
+        if lexical_raw is None and lexical_path.is_file():
+            lexical_error = (
+                "lexical-index: artifact present but unreadable/not a JSON "
+                "object — refusing generation"
+            )
+        if lexical_raw is not None and not isinstance(lexical_raw, dict):
+            lexical_error = (
+                "lexical-index: artifact present but unreadable/not a JSON "
+                "object — refusing generation"
+            )
+        lexical = lexical_raw if isinstance(lexical_raw, dict) else {}
 
         if manifest is None or graph is None:
             log.warning(
@@ -246,6 +421,8 @@ class GenerationStore:
             return
 
         errors = validate_manifest_consistency(manifest, graph, lexical)
+        if lexical_error is not None:
+            errors.append(lexical_error)
         if errors:
             log.warning(
                 "graphify-mesh: rejecting inconsistent generation %s (%d errors): %s",

@@ -17,6 +17,7 @@ from graphify_mesh.sync.overlay_refs import (
     LogicalRef,
 )
 from graphify_mesh.sync.pipeline import run
+from graphify_mesh.sync.vectors import RepoVectors
 
 SCHEMA_PATH = Path(__file__).resolve().parents[2] / "examples" / "manual-relations.schema.json"
 
@@ -430,8 +431,12 @@ def test_similar_approach_uses_embedding_ann_when_vectors_available():
     # find nothing, but the embedding vectors are near-identical -> the real
     # ANN path must still find the pair.
     embedding_vectors_by_repo = {
-        "repo.a": {"repo.a\x1fsrc/a.py\x1fOrderService": [1.0, 0.01, 0.0]},
-        "repo.b": {"repo.b\x1fsrc/b.py\x1fOrderHandler": [0.99, 0.02, 0.01]},
+        "repo.a": RepoVectors.from_mapping(
+            {"repo.a\x1fsrc/a.py\x1fOrderService": [1.0, 0.01, 0.0]}
+        ),
+        "repo.b": RepoVectors.from_mapping(
+            {"repo.b\x1fsrc/b.py\x1fOrderHandler": [0.99, 0.02, 0.01]}
+        ),
     }
 
     edges = overlay_similar.compute_similar_approach_edges(
@@ -459,10 +464,12 @@ def test_similar_approach_embedding_path_excludes_same_repo_pairs():
         }
     }
     embedding_vectors_by_repo = {
-        "repo.a": {
-            "repo.a\x1fsrc/a1.py\x1fThing1": [1.0, 0.0],
-            "repo.a\x1fsrc/a2.py\x1fThing2": [0.99, 0.01],
-        }
+        "repo.a": RepoVectors.from_mapping(
+            {
+                "repo.a\x1fsrc/a1.py\x1fThing1": [1.0, 0.0],
+                "repo.a\x1fsrc/a2.py\x1fThing2": [0.99, 0.01],
+            }
+        )
     }
     edges = overlay_similar.compute_similar_approach_edges(
         graphs_by_repo, embedding_vectors_by_repo=embedding_vectors_by_repo, top_k=5
@@ -501,9 +508,9 @@ def test_similar_approach_falls_back_for_nodes_without_a_vector():
     # "available" this generation (not the None/empty degraded case) — it
     # just has no vector for either of the two nodes under test here.
     embedding_vectors_by_repo = {
-        "repo.a": {},  # skipped by the trivial heuristic — no vector at all
-        "repo.b": {},
-        "repo.c": {"repo.c\x1fsrc/c.py\x1fUnrelated": [1.0, 0.0]},
+        "repo.a": RepoVectors.from_mapping({}),  # trivial heuristic — no vector at all
+        "repo.b": RepoVectors.from_mapping({}),
+        "repo.c": RepoVectors.from_mapping({"repo.c\x1fsrc/c.py\x1fUnrelated": [1.0, 0.0]}),
     }
 
     edges = overlay_similar.compute_similar_approach_edges(

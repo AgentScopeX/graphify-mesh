@@ -37,6 +37,7 @@ from graphify_mesh.sync import (
     progress,
     publish,
     repo_tags,
+    rss,
     validate,
 )
 from graphify_mesh.sync.backend import assert_pinned_backend
@@ -65,6 +66,7 @@ from graphify_mesh.sync.sync_project import (
     apply_action,
     decide_action,
 )
+from graphify_mesh.sync.vectors import RepoVectors
 
 log = logging.getLogger("graphify_mesh.sync")
 
@@ -135,6 +137,7 @@ class RunReport:
     embedding_status: str = ""
     embedding_stats: dict = field(default_factory=dict)
     lexical_index_stats: dict = field(default_factory=dict)
+    stage_rss: dict = field(default_factory=dict)
 
 
 def _repos_for_run(registry: Registry, reconciliation: dict) -> list:
@@ -185,7 +188,20 @@ def run(settings: Settings) -> RunReport:
         shutil.rmtree(staging_root, ignore_errors=True)
 
 
+def _record_stage_rss(tracker: rss.StageRssTracker, report: RunReport) -> None:
+    """Snapshot per-stage RSS marks recorded so far onto the report and log a
+    one-line summary. Called at every return point in `_run_locked`, so a run
+    that exits early (merge failure, validation failure, dry-run, stale
+    threshold) still reports whatever stages it actually reached."""
+    report.stage_rss = tracker.to_dict()
+    log.info(
+        "stage RSS (MB, hwm growth): %s",
+        {name: round(entry["hwm_growth_kb"] / 1024) for name, entry in report.stage_rss.items()},
+    )
+
+
 def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
+    tracker = rss.StageRssTracker()
     log.info("discovery: scanning %s ...", settings.scan_root)
     discovered = discover_filesystem(settings.scan_root, settings.approved_root)
     registry = load_registry(settings.registry_path)
@@ -307,6 +323,7 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
     report.stale_repos = sorted(set(stale_repos))
     report.dirty_repos = sorted(set(dirty_repos))
     report.auto_add_failed = sorted(bootstrap_failed_repo_ids)
+    tracker.mark("extract")
 
     sorted_repo_ids = sorted(graph_paths_by_repo.keys())
     sorted_graph_paths = [graph_paths_by_repo[rid] for rid in sorted_repo_ids]
@@ -329,8 +346,10 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
         if not merge_result.ok:
             report.merge_error = merge_result.stderr.strip()[:500]
         log.info("merge: %s", "ok" if report.merge_ok else "FAILED: " + report.merge_error)
+    tracker.mark("merge")
 
     if not report.merge_ok:
+        _record_stage_rss(tracker, report)
         _finalize(settings, staging_root, report, state, published_data=None, generation_id="")
         return report
 
@@ -396,13 +415,14 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
             )
         else:
             graph_data = naming_result.graph_data
+    tracker.mark("naming")
 
     # WS3: embed-changed stage. Runs after naming/label, before overlay-resolve
     # (plan WS1 item 6 order). Per-repo raw graphs are loaded once here and
     # reused by the overlay stage below, rather than re-reading every
     # per-repo graph.json twice.
     graphs_by_repo = overlay.load_graphs_by_repo(graph_paths_by_repo)
-    embedding_vectors_by_repo: dict = {}
+    embedding_vectors_by_repo: dict[str, RepoVectors] = {}
     embedding_model_for_overlay = "unknown"
     embedding_recipe: dict = {}
     embeddings_staged_dir: Path | None = None
@@ -436,6 +456,7 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
         embeddings_staged_dir = embedding.stage_embeddings(
             staging_root, embed_result.shards_by_repo, embed_result.id_map
         )
+    tracker.mark("embedding")
 
     # WS4: overlay-resolve stage. Runs after the WS3 embed stage, before the
     # WS5 lexical-index stage — per plan WS1 item 6 pipeline order. Every
@@ -455,6 +476,7 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
     )
     report.overlay_edge_counts = overlay_result.edge_counts_by_type
     report.overlay_manual_relation_count = overlay_result.manual_relation_count
+    tracker.mark("overlay")
 
     # WS5: lexical-index stage. Runs after overlay-resolve, before validate
     # (plan WS1 item 6 order, now fully wired — see module docstring).
@@ -464,6 +486,7 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
     # contract (WS5 deliverable 2) rather than a per-MCP-session rebuild.
     lexical_result = lexical_index.build_lexical_index(graphs_by_repo, repo_roots_by_id)
     report.lexical_index_stats = lexical_result.stats.to_dict()
+    tracker.mark("lexical_index")
 
     # Repo removal is intentional pruning (WS1 item 1: "removed repos get
     # pruned from the global merge and flagged"), not the silent data loss
@@ -483,6 +506,8 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
 
     if settings.dry_run:
         report.publish_blocked_reason = "dry-run: no publish performed"
+        tracker.mark("validate_publish")
+        _record_stage_rss(tracker, report)
         _finalize(settings, staging_root, report, state, published_data=None, generation_id="")
         return report
 
@@ -490,6 +515,8 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
         report.publish_blocked_reason = "validation failed: " + "; ".join(
             report.validation_errors[:3]
         )
+        tracker.mark("validate_publish")
+        _record_stage_rss(tracker, report)
         _finalize(settings, staging_root, report, state, published_data=None, generation_id="")
         return report
 
@@ -497,6 +524,8 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
         report.publish_blocked_reason = (
             f"stale ratio {stale_ratio:.2%} exceeds threshold {settings.stale_threshold:.0%}"
         )
+        tracker.mark("validate_publish")
+        _record_stage_rss(tracker, report)
         _finalize(settings, staging_root, report, state, published_data=None, generation_id="")
         return report
 
@@ -574,6 +603,8 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
 
     report.published = True
     report.generation_id = generation_id
+    tracker.mark("validate_publish")
+    _record_stage_rss(tracker, report)
 
     _finalize(
         settings, staging_root, report, state, published_data=manifest, generation_id=generation_id

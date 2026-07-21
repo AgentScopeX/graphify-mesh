@@ -70,9 +70,12 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import numpy as np
+
 from graphify_mesh.sync.config import Settings, is_valid_http_base_url
 from graphify_mesh.sync.overlay_refs import LogicalRef
 from graphify_mesh.sync.publish import _fsync_dir
+from graphify_mesh.sync.vectors import RepoVectors
 
 log = logging.getLogger("graphify_mesh.sync.embedding")
 
@@ -110,6 +113,17 @@ TRIVIAL_MAX_SNIPPET_LINES = 2
 
 EMBED_BATCH_SIZE = 16
 EMBED_REQUEST_TIMEOUT = 30.0
+
+# Shard format v2: `<repo>.meta.json` (entries + dim + format marker) +
+# `<repo>.npy` (float32 matrix, row i belongs to the key whose entry says
+# `"row": i`). v1 (`<repo>.json` with an inline `embedding` list per entry)
+# is still read for back-compat; SUPPORTED_SHARD_FORMATS is the meta.json
+# `shard_format` allowlist read_previous_shard will accept before trusting a
+# v2 shard's matrix at all.
+SHARD_FORMAT_VERSION = 2
+SUPPORTED_SHARD_FORMATS = frozenset({1, 2})
+SHARD_META_SUFFIX = ".meta.json"
+SHARD_MATRIX_SUFFIX = ".npy"
 
 HealthCheckFn = Callable[[str, float], bool]
 
@@ -165,16 +179,33 @@ class EmbeddingStats:
 
 
 @dataclass
+class RepoShard:
+    """In-RAM shard for one repo: durable entry bookkeeping (content_hash +
+    which matrix row, if any, holds this key's vector) plus the actual
+    vectors as a `RepoVectors` matrix. `entries[key]` is
+    `{"content_hash": str | None, "row": int | None}` — `"row": None` means
+    this key carries no vector at all (trivial-skip), matching v1's
+    `embedding: None` marker."""
+
+    entries: dict[str, dict] = field(default_factory=dict)
+    vectors: RepoVectors = field(default_factory=RepoVectors.empty)
+
+    @classmethod
+    def empty(cls) -> "RepoShard":
+        return cls(entries={}, vectors=RepoVectors.empty())
+
+
+@dataclass
 class EmbeddingStageResult:
     status: str  # EMBED_HEALTHY | EMBED_DEGRADED | EMBED_PARTIAL
-    vectors_by_repo: dict[str, dict[str, list[float]]] = field(default_factory=dict)
-    # Full shard entries (content_hash + embedding, including trivial-skip
-    # `{"embedding": None}` markers) per repo — this is what actually gets
+    # Vector-only view per repo (the `overlay_similar.py` seam) — a
+    # `RepoVectors` matrix, not a raw `{key: [float, ...]}` mapping.
+    vectors_by_repo: dict[str, RepoVectors] = field(default_factory=dict)
+    # Full shard (entries + vectors) per repo — this is what actually gets
     # persisted to disk (`stage_embeddings`/`persist_generation`), so a
     # future run can resume from content_hash comparisons even for nodes
-    # that carry no vector. `vectors_by_repo` above is the vector-only view
-    # `overlay_similar.py` consumes.
-    shards_by_repo: dict[str, dict[str, dict]] = field(default_factory=dict)
+    # that carry no vector.
+    shards_by_repo: dict[str, RepoShard] = field(default_factory=dict)
     stats: EmbeddingStats = field(default_factory=EmbeddingStats)
     recipe: EmbeddingRecipe | None = None
     id_map: dict[str, dict] = field(default_factory=dict)
@@ -349,16 +380,21 @@ def compute_repo_shard(
     repo_id: str,
     graph_data: dict,
     source_root: Path | None,
-    previous_shard: dict[str, dict],
+    previous_shard: RepoShard,
     base_url: str,
     model: str,
     stats: EmbeddingStats,
-) -> dict[str, dict]:
-    """Builds this repo's shard for a repo that changed this run. Each shard
-    entry is `{"content_hash": ..., "embedding": [...] | None}` — `None`
-    means the node was skipped by the trivial heuristic, never that
-    embedding failed silently (a real failure raises, per `embed_batch`)."""
-    shard: dict[str, dict] = {}
+) -> RepoShard:
+    """Builds this repo's shard for a repo that changed this run. Each
+    `entries[key]` is `{"content_hash": ..., "row": int | None}` — `row`
+    (assigned once the final `RepoVectors` matrix is built below) is `None`
+    iff the node was skipped by the trivial heuristic, never that embedding
+    failed silently (a real failure raises, per `embed_batch`)."""
+    entries: dict[str, dict] = {}
+    # key -> vector (list[float] for freshly-embedded, ndarray row for
+    # reused-from-previous) collected before the final RepoVectors matrix is
+    # built, so reused rows pass straight through without a list copy.
+    vector_sources: dict[str, "list[float] | np.ndarray"] = {}
     to_embed_keys: list[str] = []
     to_embed_inputs: list[str] = []
 
@@ -366,25 +402,23 @@ def compute_repo_shard(
         repo_id, graph_data, source_root
     ):
         if trivial:
-            shard[key] = {"content_hash": None, "embedding": None}
+            entries[key] = {"content_hash": None, "row": None}
             stats.skipped_trivial += 1
             continue
 
         input_text = build_embedding_input(label, snippet, source_file, community_name)
         digest = _content_hash(input_text)
-        prev_entry = previous_shard.get(key)
-        if (
-            prev_entry is not None
-            and prev_entry.get("content_hash") == digest
-            and prev_entry.get("embedding")
-        ):
-            shard[key] = {"content_hash": digest, "embedding": prev_entry["embedding"]}
+        prev_entry = previous_shard.entries.get(key)
+        prev_vector = previous_shard.vectors.get(key)
+        if prev_entry is not None and prev_entry.get("content_hash") == digest and prev_vector is not None:
+            entries[key] = {"content_hash": digest, "row": None}  # row filled in below
+            vector_sources[key] = prev_vector
             stats.reused += 1
             continue
 
         to_embed_keys.append(key)
         to_embed_inputs.append(input_text)
-        shard[key] = {"content_hash": digest, "embedding": None}  # placeholder, filled below
+        entries[key] = {"content_hash": digest, "row": None}  # placeholder, filled below
 
     total_batches = -(-len(to_embed_keys) // EMBED_BATCH_SIZE) if to_embed_keys else 0
     if total_batches:
@@ -397,7 +431,7 @@ def compute_repo_shard(
         batch_inputs = to_embed_inputs[batch_start : batch_start + EMBED_BATCH_SIZE]
         vectors = embed_batch(base_url, model, batch_inputs)
         for key, vector in zip(batch_keys, vectors, strict=True):
-            shard[key]["embedding"] = vector
+            vector_sources[key] = vector
             stats.embedded += 1
         log.info(
             "%s: batch %d/%d done (%d nodes embedded so far)",
@@ -407,7 +441,11 @@ def compute_repo_shard(
             stats.embedded,
         )
 
-    return shard
+    repo_vectors = RepoVectors.from_mapping(vector_sources)
+    for row, key in enumerate(repo_vectors.keys):
+        entries[key]["row"] = row
+
+    return RepoShard(entries=entries, vectors=repo_vectors)
 
 
 def build_id_map(
@@ -440,26 +478,220 @@ def build_id_map(
     return new_map
 
 
-def _shard_filename(repo_id: str) -> str:
+def _validate_repo_id_for_filename(repo_id: str) -> None:
     """repo_id is validated at registry load (registry.REPO_ID_PATTERN), but
     shard paths are built from it in several places — keep a defense-in-depth
-    check right where the filename is formed so a future caller with an
+    check right where each filename is formed so a future caller with an
     unvalidated repo_id can never traverse out of the shard dir."""
     if "/" in repo_id or "\\" in repo_id or repo_id in ("", ".", "..") or repo_id.startswith("."):
         raise ValueError(f"unsafe repo_id for shard filename: {repo_id!r}")
+
+
+def _shard_filename(repo_id: str) -> str:
+    """v1 shard filename (`<repo>.json`, entries with inline `embedding`
+    lists) — still used as the read-compat fallback in `read_previous_shard`."""
+    _validate_repo_id_for_filename(repo_id)
     return f"{repo_id}.json"
 
 
-def read_previous_shard(embeddings_current_dir: Path | None, repo_id: str) -> dict[str, dict]:
-    if embeddings_current_dir is None or not embeddings_current_dir.is_dir():
-        return {}
-    shard_path = embeddings_current_dir / _shard_filename(repo_id)
-    if not shard_path.is_file():
-        return {}
+def _shard_meta_filename(repo_id: str) -> str:
+    """v2 shard meta filename (`<repo>.meta.json`)."""
+    _validate_repo_id_for_filename(repo_id)
+    return f"{repo_id}{SHARD_META_SUFFIX}"
+
+
+def _shard_matrix_filename(repo_id: str) -> str:
+    """v2 shard matrix filename (`<repo>.npy`)."""
+    _validate_repo_id_for_filename(repo_id)
+    return f"{repo_id}{SHARD_MATRIX_SUFFIX}"
+
+
+def _load_shard_matrix(matrix_path: Path, repo_id: str) -> "np.ndarray | None":
+    """Loads the v2 matrix file mmap'd (read-only). Missing/corrupt matrix
+    alongside a meta file is not a hard failure — it just means the previous
+    shard is treated as empty, which forces a full re-embed this run (safe,
+    only costs compute)."""
+    if not matrix_path.is_file():
+        log.warning(
+            "%s: shard meta present but matrix file missing at %s — "
+            "treating previous shard as empty",
+            repo_id,
+            matrix_path,
+        )
+        return None
     try:
-        return json.loads(shard_path.read_text(encoding="utf-8")).get("entries", {})
-    except (OSError, json.JSONDecodeError):
-        return {}
+        return np.load(matrix_path, mmap_mode="r")
+    except (OSError, ValueError) as exc:
+        log.warning(
+            "%s: failed to load shard matrix %s (%s) — treating previous shard as empty",
+            repo_id,
+            matrix_path,
+            exc,
+        )
+        return None
+
+
+def _read_v1_shard(shard_path: Path) -> RepoShard:
+    # Sync trusts its own artifacts here — this reads back a shard this same
+    # pipeline wrote in a previous run. There is deliberately no size gate
+    # (unlike the server's read-side `MAX_SHARD_BYTES`): a legitimately-grown
+    # shard hitting a size ceiling would silently force a full re-embed,
+    # which is the wrong failure mode for sync. Parse failure (corrupt JSON,
+    # or invalid UTF-8 bytes on disk) instead degrades to an empty shard,
+    # which safely triggers re-embed for just this repo.
+    try:
+        data = json.loads(shard_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return RepoShard.empty()
+
+    raw_entries = data.get("entries", {})
+    entries: dict[str, dict] = {}
+    vector_sources: dict[str, list[float]] = {}
+    for key, entry in raw_entries.items():
+        entries[key] = {"content_hash": entry.get("content_hash"), "row": None}
+        embedding_value = entry.get("embedding")
+        if embedding_value:
+            vector_sources[key] = embedding_value
+
+    vectors = RepoVectors.from_mapping(vector_sources)
+    for row, key in enumerate(vectors.keys):
+        entries[key]["row"] = row
+    return RepoShard(entries=entries, vectors=vectors)
+
+
+def _validate_v2_shard(meta: dict, matrix: "np.ndarray") -> str | None:
+    """Validates a v2 shard's meta + matrix BEFORE any RepoVectors is built
+    from them. Returns a human-readable reason string on the first violation
+    found (guard-clause chain, cheapest checks first), or `None` if the
+    shard is trustworthy. Never raises — every check here exists precisely
+    because the input is untrusted (a previous run's artifact, possibly
+    corrupted by disk issues, a partial write, or a hostile/malformed
+    generation dir); callers must treat a non-None reason as "corrupt
+    previous shard" and fall back to an empty RepoShard, which forces a safe
+    re-embed rather than persisting or propagating bad data."""
+    shard_format = meta.get("shard_format")
+    # `x in a_frozenset_of_ints` calls hash(x) first — an unhashable JSON
+    # value (a list or dict, from a malformed/hostile meta file) would raise
+    # TypeError instead of failing this check cleanly. Guard the type
+    # BEFORE the membership test (bool excluded: isinstance(True, int) is
+    # True in Python, but a bool is never a valid format marker).
+    if not isinstance(shard_format, int) or isinstance(shard_format, bool):
+        return f"shard_format is not an int (got {shard_format!r})"
+    if shard_format not in SUPPORTED_SHARD_FORMATS:
+        return f"unsupported shard_format {shard_format!r}"
+
+    entries = meta.get("entries")
+    if not isinstance(entries, dict):
+        return f"entries is not a dict (got {type(entries).__name__})"
+    for key, entry in entries.items():
+        if not isinstance(entry, dict):
+            return f"entry {key!r} is not a dict (got {type(entry).__name__})"
+
+    if matrix.ndim != 2:
+        return f"matrix is not 2-D (ndim={matrix.ndim})"
+
+    if matrix.dtype != np.float32:
+        return f"matrix dtype is {matrix.dtype}, expected float32"
+
+    dim = meta.get("dim")
+    if dim != matrix.shape[1]:
+        return f"meta dim {dim!r} does not match matrix width {matrix.shape[1]}"
+
+    n_rows = matrix.shape[0]
+    seen_rows: dict[int, str] = {}
+    for key, entry in entries.items():
+        row = entry.get("row")
+        if row is None:
+            continue
+        if isinstance(row, bool) or not isinstance(row, int):
+            return f"entry {key!r} has non-int row {row!r}"
+        if row < 0 or row >= n_rows:
+            return f"entry {key!r} has out-of-range row {row!r} (n_rows={n_rows})"
+        if row in seen_rows:
+            return (
+                f"duplicate row {row} claimed by both {seen_rows[row]!r} and {key!r}"
+            )
+        seen_rows[row] = key
+
+    return None
+
+
+def _read_v2_shard(current_dir: Path, repo_id: str, meta_path: Path) -> RepoShard:
+    # Same trust-your-own-artifacts stance as `_read_v1_shard` above: no
+    # MAX_SHARD_BYTES-style size ceiling on the sync side, since this is our
+    # own previous-run output, not untrusted input — gating on size here
+    # would risk a silent full re-embed for a shard that simply grew.
+    # Invalid UTF-8 bytes on disk degrade to an empty shard (forces re-embed)
+    # rather than crashing the sync run.
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        log.warning("%s: corrupt shard meta at %s — treating previous shard as empty", repo_id, meta_path)
+        return RepoShard.empty()
+
+    if not isinstance(meta, dict):
+        log.warning(
+            "%s: shard meta at %s is not a JSON object (got %s) — treating previous shard as empty",
+            repo_id,
+            meta_path,
+            type(meta).__name__,
+        )
+        return RepoShard.empty()
+
+    matrix_path = current_dir / _shard_matrix_filename(repo_id)
+    matrix = _load_shard_matrix(matrix_path, repo_id)
+    if matrix is None:
+        return RepoShard.empty()
+
+    invalid_reason = _validate_v2_shard(meta, matrix)
+    if invalid_reason is not None:
+        log.warning(
+            "%s: invalid v2 shard in %s (%s) — treating previous shard as empty",
+            repo_id,
+            meta_path,
+            invalid_reason,
+        )
+        return RepoShard.empty()
+
+    entries: dict[str, dict] = meta["entries"]
+    n_rows = matrix.shape[0]
+    keys_by_row: list[str | None] = [None] * n_rows
+    for key, entry in entries.items():
+        row = entry.get("row")
+        if row is None:
+            continue
+        keys_by_row[row] = key
+
+    if any(key is None for key in keys_by_row):
+        log.warning(
+            "%s: shard matrix has rows with no owning entry in %s — treating previous shard as empty",
+            repo_id,
+            meta_path,
+        )
+        return RepoShard.empty()
+
+    # Every row was assigned a key above (the `any(... is None)` guard
+    # returned early otherwise) — narrow `list[str | None]` to `list[str]`
+    # explicitly so mypy sees what we already know at runtime.
+    narrowed_keys: list[str] = [key for key in keys_by_row if key is not None]
+    assert len(narrowed_keys) == len(keys_by_row)
+
+    vectors = RepoVectors.from_rows(narrowed_keys, matrix)
+    return RepoShard(entries=entries, vectors=vectors)
+
+
+def read_previous_shard(embeddings_current_dir: Path | None, repo_id: str) -> RepoShard:
+    if embeddings_current_dir is None or not embeddings_current_dir.is_dir():
+        return RepoShard.empty()
+
+    meta_path = embeddings_current_dir / _shard_meta_filename(repo_id)
+    if meta_path.is_file():
+        return _read_v2_shard(embeddings_current_dir, repo_id, meta_path)
+
+    v1_path = embeddings_current_dir / _shard_filename(repo_id)
+    if not v1_path.is_file():
+        return RepoShard.empty()
+    return _read_v1_shard(v1_path)
 
 
 def read_previous_id_map(embeddings_current_dir: Path | None) -> dict[str, dict]:
@@ -524,14 +756,12 @@ def run_embedding_stage(
         # Degraded: carry forward whatever was last published, verbatim, so a
         # transient outage doesn't erase the whole index; nodes added since
         # then simply have no vector until a healthy run recomputes them.
-        vectors_by_repo: dict[str, dict[str, list[float]]] = {}
-        shards_by_repo: dict[str, dict[str, dict]] = {}
+        vectors_by_repo: dict[str, RepoVectors] = {}
+        shards_by_repo: dict[str, RepoShard] = {}
         for repo_id in graphs_by_repo:
             prev_shard = read_previous_shard(previous_current_dir, repo_id)
             shards_by_repo[repo_id] = prev_shard
-            vectors_by_repo[repo_id] = {
-                k: v["embedding"] for k, v in prev_shard.items() if v.get("embedding")
-            }
+            vectors_by_repo[repo_id] = prev_shard.vectors
         return EmbeddingStageResult(
             status=EMBED_DEGRADED,
             vectors_by_repo=vectors_by_repo,
@@ -541,9 +771,9 @@ def run_embedding_stage(
         )
 
     stats = EmbeddingStats()
-    vectors_by_repo = {}
+    vectors_by_repo: dict[str, RepoVectors] = {}
     all_keys: set[str] = set()
-    staged_shards: dict[str, dict] = {}
+    staged_shards: dict[str, RepoShard] = {}
     mid_run_failure: str | None = None
 
     total_repos = len(graphs_by_repo)
@@ -552,7 +782,7 @@ def run_embedding_stage(
         source_root = repo_roots_by_id.get(repo_id)
         previous_shard = read_previous_shard(previous_current_dir, repo_id)
 
-        if repo_id in unchanged_repo_ids and previous_shard:
+        if repo_id in unchanged_repo_ids and previous_shard.entries:
             # WS1's own changed-detection (decide_action -> ACTION_SKIP)
             # already told us this repo is untouched this run — reuse its
             # whole previous shard rather than re-reading/re-hashing every
@@ -594,17 +824,13 @@ def run_embedding_stage(
                 for fallback_repo_id, _ in repo_items[i - 1 :]:
                     fallback_shard = read_previous_shard(previous_current_dir, fallback_repo_id)
                     staged_shards[fallback_repo_id] = fallback_shard
-                    all_keys.update(fallback_shard.keys())
-                    vectors_by_repo[fallback_repo_id] = {
-                        k: v["embedding"] for k, v in fallback_shard.items() if v.get("embedding")
-                    }
+                    all_keys.update(fallback_shard.entries.keys())
+                    vectors_by_repo[fallback_repo_id] = fallback_shard.vectors
                 break
 
         staged_shards[repo_id] = shard
-        all_keys.update(shard.keys())
-        vectors_by_repo[repo_id] = {
-            k: v["embedding"] for k, v in shard.items() if v.get("embedding")
-        }
+        all_keys.update(shard.entries.keys())
+        vectors_by_repo[repo_id] = shard.vectors
 
     id_map = build_id_map(previous_id_map, all_keys, provisional_generation_id)
     stats.tombstoned = sum(1 for v in id_map.values() if v.get("status") == "tombstoned")
@@ -622,29 +848,39 @@ def run_embedding_stage(
     )
 
 
-def _infer_dim(vectors_by_repo: dict[str, dict[str, list[float]]]) -> int:
+def _infer_dim(vectors_by_repo: dict[str, RepoVectors]) -> int:
     from graphify_mesh.sync.config import EMBED_DEFAULT_DIM
 
-    for shard in vectors_by_repo.values():
-        for vector in shard.values():
-            if vector:
-                return len(vector)
-    return EMBED_DEFAULT_DIM
+    return max(
+        (rv.dim for rv in vectors_by_repo.values() if len(rv)),
+        default=EMBED_DEFAULT_DIM,
+    )
 
 
 def stage_embeddings(
-    staging_root: Path, staged_shards_source: dict[str, dict], id_map: dict[str, dict]
+    staging_root: Path, staged_shards_source: dict[str, RepoShard], id_map: dict[str, dict]
 ) -> Path:
     """Write this run's shards + id-map into the ephemeral per-run staging
-    tempdir. Nothing here touches the real, persistent embeddings_dir — see
+    tempdir as shard format v2 (`<repo>.meta.json` + `<repo>.npy`). Nothing
+    here touches the real, persistent embeddings_dir — see
     `persist_generation`."""
     out_dir = staging_root / "embeddings"
     out_dir.mkdir(parents=True, exist_ok=True)
-    for repo_id, entries in staged_shards_source.items():
-        shard_path = out_dir / _shard_filename(repo_id)
-        shard_path.write_text(
-            json.dumps({"repo_id": repo_id, "entries": entries}), encoding="utf-8"
+    for repo_id, shard in staged_shards_source.items():
+        meta_path = out_dir / _shard_meta_filename(repo_id)
+        matrix_path = out_dir / _shard_matrix_filename(repo_id)
+        meta_path.write_text(
+            json.dumps(
+                {
+                    "repo_id": repo_id,
+                    "shard_format": SHARD_FORMAT_VERSION,
+                    "dim": shard.vectors.dim,
+                    "entries": shard.entries,
+                }
+            ),
+            encoding="utf-8",
         )
+        np.save(matrix_path, shard.vectors.matrix)
     (out_dir / "id-map.json").write_text(
         json.dumps(id_map, indent=2, sort_keys=True), encoding="utf-8"
     )

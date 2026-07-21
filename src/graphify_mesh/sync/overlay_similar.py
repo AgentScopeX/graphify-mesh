@@ -26,12 +26,15 @@ can't flood the overlay with edges (WS4 ship-order item 2: "per-pair cap").
 
 from __future__ import annotations
 
+import numpy as np
+
 from graphify_mesh.sync.embed_similarity import (
     SIMILARITY_THRESHOLD_DEFAULT,
     mutual_top_k_pairs,
 )
 from graphify_mesh.sync.embedding import key_to_ref, node_key
 from graphify_mesh.sync.overlay_refs import LogicalRef, OverlayEdge
+from graphify_mesh.sync.vectors import RepoVectors
 
 PLACEHOLDER_PROVENANCE = "PLACEHOLDER_STRUCTURAL_MATCH"
 PLACEHOLDER_CONFIDENCE = 0.4
@@ -128,15 +131,15 @@ def _fallback_exact_match_pairs(
 
 
 def _embedding_pairs(
-    embedding_vectors_by_repo: dict[str, dict[str, list[float]]],
+    embedding_vectors_by_repo: dict[str, RepoVectors],
     top_k: int,
     threshold: float,
     embedding_model: str,
 ) -> tuple[list[OverlayEdge], set[str]]:
-    items: dict[str, tuple[str, list[float]]] = {}
-    for repo_id, shard in embedding_vectors_by_repo.items():
-        for key, vector in shard.items():
-            items[key] = (repo_id, vector)
+    items: dict[str, tuple[str, np.ndarray]] = {}
+    for repo_id, rv in embedding_vectors_by_repo.items():
+        for row_index, key in enumerate(rv.keys):
+            items[key] = (repo_id, rv.matrix[row_index])
 
     if len(items) < 2:
         return [], set(items.keys())
@@ -170,7 +173,7 @@ def _embedding_pairs(
 
 def compute_similar_approach_edges(
     graphs_by_repo: dict[str, dict],
-    embedding_vectors_by_repo: dict[str, dict[str, list[float]]] | None = None,
+    embedding_vectors_by_repo: dict[str, RepoVectors] | None = None,
     top_k: int = 5,
     threshold: float = SIMILARITY_THRESHOLD_DEFAULT,
     embedding_model: str = "unknown",
@@ -181,7 +184,7 @@ def compute_similar_approach_edges(
 
     Args:
         graphs_by_repo: repo_id -> that repo's raw per-repo graph.json data.
-        embedding_vectors_by_repo: repo_id -> {node_key: vector}, produced by
+        embedding_vectors_by_repo: repo_id -> RepoVectors, produced by
             `embedding.run_embedding_stage` this generation. `None` or empty
             means no embedding index is available at all this run (e.g. the
             embed stage was degraded) — every node falls back to the

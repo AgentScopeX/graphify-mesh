@@ -27,8 +27,9 @@ override once real tuning data exists (see `overlay_similar.py` callers).
 
 from __future__ import annotations
 
-import math
 import random
+
+import numpy as np
 
 # Untuned default (C7) — real tuning needs labeled similar/dissimilar node
 # pairs, which do not exist yet. Revisit once WS7's eval harness collects
@@ -39,37 +40,56 @@ LSH_NUM_HYPERPLANES = 12
 LSH_SEED = 1337
 
 
-def cosine_similarity(a: list[float], b: list[float]) -> float:
+def cosine_similarity(
+    a: "list[float] | np.ndarray", b: "list[float] | np.ndarray"
+) -> float:
     # Mixed-dimension vectors (e.g. a shard embedded under two different
     # models) carry no comparable signal — score them 0 instead of raising.
     if len(a) != len(b):
         return 0.0
-    dot = sum(x * y for x, y in zip(a, b, strict=True))
-    norm_a = math.sqrt(sum(x * x for x in a))
-    norm_b = math.sqrt(sum(y * y for y in b))
+    vec_a = np.asarray(a, dtype=np.float32)
+    vec_b = np.asarray(b, dtype=np.float32)
+    norm_a = float(np.linalg.norm(vec_a))
+    norm_b = float(np.linalg.norm(vec_b))
     if norm_a == 0.0 or norm_b == 0.0:
         return 0.0
-    return dot / (norm_a * norm_b)
+    return float(np.dot(vec_a, vec_b) / (norm_a * norm_b))
 
 
-def _random_hyperplanes(dim: int, num_planes: int, seed: int) -> list[list[float]]:
+def _planes_matrix(
+    dim: int, num_planes: int = LSH_NUM_HYPERPLANES, seed: int = LSH_SEED
+) -> np.ndarray:
+    """Deterministic random hyperplanes for LSH bucketing.
+
+    CRITICAL determinism constraint: hyperplane VALUES are generated via
+    `random.Random(seed).gauss(0.0, 1.0)` in the exact loop order of the
+    pre-numpy `_random_hyperplanes` (planes outer loop, dim inner loop),
+    then converted with `np.asarray(..., dtype=np.float32)` — that part is
+    still binding. The resulting bucket signatures are deterministic for
+    identical inputs but are NOT guaranteed bit-identical to the retired
+    pre-numpy scalar path (see the comment on `_bucket_signature_batch`).
+    """
     rng = random.Random(seed)  # noqa: S311 - deterministic LSH hyperplanes, not cryptographic
-    return [[rng.gauss(0.0, 1.0) for _ in range(dim)] for _ in range(num_planes)]
+    planes = [[rng.gauss(0.0, 1.0) for _ in range(dim)] for _ in range(num_planes)]
+    return np.asarray(planes, dtype=np.float32)  # shape (num_planes, dim)
 
 
-def _bucket_signature(vector: list[float], hyperplanes: list[list[float]]) -> str:
-    bits = []
-    for plane in hyperplanes:
-        # strict=False: a vector shorter than the plane (mixed-dim shard)
-        # still buckets; final scoring goes through cosine_similarity which
-        # rejects mixed dimensions.
-        dot = sum(v * p for v, p in zip(vector, plane, strict=False))
-        bits.append("1" if dot >= 0 else "0")
-    return "".join(bits)
+def _bucket_signature_batch(matrix: np.ndarray, planes: np.ndarray) -> list[str]:
+    # Signatures are deterministic for identical inputs on the same platform
+    # (same process or a fresh one), but are NOT guaranteed bit-identical to
+    # the pre-numpy scalar implementation: dot products near a hyperplane
+    # boundary can flip sign under batched/BLAS summation vs. Python's
+    # sequential sum, regardless of dtype. LSH tolerates this by design — a
+    # boundary flip only changes which candidate pairs get compared; see
+    # the module docstring's known-limitation paragraph on boundary misses.
+    # matrix (n, dim) @ planes.T (dim, p) -> (n, p); sign bit per plane.
+    dots = matrix @ planes.T
+    bits = dots >= 0
+    return ["".join("1" if b else "0" for b in row) for row in bits]
 
 
 def mutual_top_k_pairs(
-    items: dict[str, tuple[str, list[float]]],
+    items: dict[str, tuple[str, "list[float] | np.ndarray"]],
     top_k: int,
     threshold: float = SIMILARITY_THRESHOLD_DEFAULT,
     num_planes: int = LSH_NUM_HYPERPLANES,
@@ -94,26 +114,50 @@ def mutual_top_k_pairs(
     if len(keys) < 2:
         return []
 
-    dim = len(next(iter(items.values()))[1])
-    hyperplanes = _random_hyperplanes(dim, num_planes, seed)
+    # Stack all vectors in key order into one float32 matrix. Mixed-dim
+    # vectors are dropped here — same "scores zero everywhere" outcome as
+    # the scalar implementation, since cosine_similarity always rejected
+    # mixed dimensions; dropping them up front just avoids a ragged stack.
+    dim = len(items[keys[0]][1])
+    kept_keys = [key for key in keys if len(items[key][1]) == dim]
+    if len(kept_keys) < 2:
+        return []
 
-    buckets: dict[str, list[str]] = {}
-    for key, (_, vector) in items.items():
-        sig = _bucket_signature(vector, hyperplanes)
-        buckets.setdefault(sig, []).append(key)
+    repo_by_key = {key: items[key][0] for key in kept_keys}
+    matrix = np.asarray([items[key][1] for key in kept_keys], dtype=np.float32)
+
+    # L2-normalize rows once; zero-norm rows normalize to zero vectors so
+    # they never contribute a nonzero similarity to anything.
+    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+    safe_norms = np.where(norms == 0.0, 1.0, norms)
+    normalized = np.where(norms == 0.0, 0.0, matrix / safe_norms)
+
+    planes = _planes_matrix(dim, num_planes, seed)
+    signatures = _bucket_signature_batch(matrix, planes)
+
+    buckets: dict[str, list[int]] = {}
+    for row_index, sig in enumerate(signatures):
+        buckets.setdefault(sig, []).append(row_index)
 
     # Candidate generation: only within-bucket comparisons (ANN, not
     # all-pairs). Exact cosine + threshold filtering still applies to every
     # candidate pair actually compared, so scoring is never approximate.
-    candidates: dict[str, list[tuple[str, float]]] = {key: [] for key in keys}
-    for bucket_keys in buckets.values():
-        for i, key_a in enumerate(bucket_keys):
-            repo_a, vec_a = items[key_a]
-            for key_b in bucket_keys[i + 1 :]:
-                repo_b, vec_b = items[key_b]
+    candidates: dict[str, list[tuple[str, float]]] = {key: [] for key in kept_keys}
+    for bucket_rows in buckets.values():
+        if len(bucket_rows) < 2:
+            continue
+        sub = normalized[bucket_rows]
+        sims = sub @ sub.T
+        for i, row_a in enumerate(bucket_rows):
+            key_a = kept_keys[row_a]
+            repo_a = repo_by_key[key_a]
+            for j in range(i + 1, len(bucket_rows)):
+                row_b = bucket_rows[j]
+                key_b = kept_keys[row_b]
+                repo_b = repo_by_key[key_b]
                 if repo_a == repo_b:
                     continue
-                score = cosine_similarity(vec_a, vec_b)
+                score = float(sims[i, j])
                 if score < threshold:
                     continue
                 candidates[key_a].append((key_b, score))

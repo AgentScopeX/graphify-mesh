@@ -34,6 +34,7 @@ from graphify_mesh.sync.overlay_depends import (
 )
 from graphify_mesh.sync.overlay_refs import OverlayEdge
 from graphify_mesh.sync.overlay_similar import compute_similar_approach_edges
+from graphify_mesh.sync.vectors import RepoVectors
 
 log = logging.getLogger("graphify_mesh.sync.overlay")
 
@@ -69,7 +70,7 @@ def build_overlay(
     manual_relations_path: Path,
     manual_relations_schema_path: Path,
     similar_top_k: int = 5,
-    embedding_vectors_by_repo: dict[str, dict[str, list[float]]] | None = None,
+    embedding_vectors_by_repo: dict[str, RepoVectors] | None = None,
     embedding_model: str = "unknown",
     graphs_by_repo: dict[str, dict] | None = None,
 ) -> OverlayResult:

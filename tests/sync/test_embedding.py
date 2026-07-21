@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from graphify_mesh.sync import embedding
 from graphify_mesh.sync.config import Settings
+from graphify_mesh.sync.vectors import RepoVectors
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 FAKE_GRAPHIFY = FIXTURES_DIR / "fake_graphify" / "graphify"
@@ -229,14 +231,15 @@ def test_compute_repo_shard_reuses_unchanged_node_without_calling_embed(tmp_path
         "repo.a",
         graph,
         tmp_path,
-        previous_shard={},
+        previous_shard=embedding.RepoShard.empty(),
         base_url="https://host",
         model="m",
         stats=stats,
     )
     assert call_count["n"] == 1
-    key = next(iter(first_shard))
-    assert first_shard[key]["embedding"] == [1.0, 2.0]
+    key = next(iter(first_shard.entries))
+    assert list(first_shard.vectors.get(key)) == pytest.approx([1.0, 2.0])
+    assert first_shard.entries[key]["row"] == 0
 
     # Second run, node completely unchanged -> content_hash matches, must be
     # reused without another embed_batch call.
@@ -250,7 +253,7 @@ def test_compute_repo_shard_reuses_unchanged_node_without_calling_embed(tmp_path
         stats=stats,
     )
     assert call_count["n"] == 1  # unchanged: no new call
-    assert second_shard[key]["embedding"] == [1.0, 2.0]
+    assert list(second_shard.vectors.get(key)) == pytest.approx([1.0, 2.0])
     assert stats.reused == 1
 
 
@@ -269,7 +272,7 @@ def test_compute_repo_shard_recomputes_when_content_changes(tmp_path, monkeypatc
         "repo.a",
         first_graph,
         tmp_path,
-        previous_shard={},
+        previous_shard=embedding.RepoShard.empty(),
         base_url="https://host",
         model="m",
         stats=stats,
@@ -288,8 +291,8 @@ def test_compute_repo_shard_recomputes_when_content_changes(tmp_path, monkeypatc
         stats=stats,
     )
     assert call_count["n"] == 2
-    key = next(iter(second_shard))
-    assert second_shard[key]["embedding"] == [2.0]
+    key = next(iter(second_shard.entries))
+    assert list(second_shard.vectors.get(key)) == pytest.approx([2.0])
 
 
 def test_compute_repo_shard_skips_trivial_node_without_calling_embed(tmp_path, monkeypatch):
@@ -318,14 +321,56 @@ def test_compute_repo_shard_skips_trivial_node_without_calling_embed(tmp_path, m
         "repo.a",
         graph,
         tmp_path,
-        previous_shard={},
+        previous_shard=embedding.RepoShard.empty(),
         base_url="https://host",
         model="m",
         stats=stats,
     )
-    key = next(iter(shard))
-    assert shard[key]["embedding"] is None
+    key = next(iter(shard.entries))
+    assert shard.entries[key]["row"] is None
+    assert shard.vectors.get(key) is None
     assert stats.skipped_trivial == 1
+
+
+def test_compute_repo_shard_returns_repo_vectors(tmp_path, monkeypatch):
+    graph = {
+        "nodes": [
+            {
+                "id": "n1",
+                "label": "computeAlpha",
+                "source_file": "src/w.py",
+                "community_name": "Comm",
+            },
+            {
+                "id": "n2",
+                "label": "computeBeta",
+                "source_file": "src/w.py",
+                "community_name": "Comm",
+            },
+        ]
+    }
+    stats = embedding.EmbeddingStats()
+
+    def fake_embed_batch(base_url, model, inputs, timeout=30.0):
+        return [[float(i), float(i) + 1.0] for i, _ in enumerate(inputs)]
+
+    monkeypatch.setattr(embedding, "embed_batch", fake_embed_batch)
+
+    shard = embedding.compute_repo_shard(
+        "repo.a",
+        graph,
+        tmp_path,
+        previous_shard=embedding.RepoShard.empty(),
+        base_url="https://host",
+        model="m",
+        stats=stats,
+    )
+    assert isinstance(shard.vectors, RepoVectors)
+    assert shard.vectors.matrix.dtype == np.float32
+    for key, entry in shard.entries.items():
+        if entry["row"] is None:
+            continue
+        assert shard.vectors.keys[entry["row"]] == key
 
 
 # ---------------------------------------------------------------------------
@@ -422,7 +467,7 @@ def test_run_embedding_stage_reuses_whole_shard_for_unchanged_repo(tmp_path, mon
 
     assert result.status == embedding.EMBED_HEALTHY
     assert result.stats.reused_repos_unchanged == 1
-    assert result.vectors_by_repo["repo.a"]["repo.a\x1fsrc/w.py\x1fWidget"] == [9.0]
+    assert list(result.vectors_by_repo["repo.a"].get("repo.a\x1fsrc/w.py\x1fWidget")) == [9.0]
 
 
 def test_run_embedding_stage_degraded_carries_forward_previous_vectors(tmp_path):
@@ -455,7 +500,7 @@ def test_run_embedding_stage_degraded_carries_forward_previous_vectors(tmp_path)
     )
 
     assert result.status == embedding.EMBED_DEGRADED
-    assert result.vectors_by_repo["repo.a"]["repo.a\x1fsrc/w.py\x1fWidget"] == [7.0]
+    assert list(result.vectors_by_repo["repo.a"].get("repo.a\x1fsrc/w.py\x1fWidget")) == [7.0]
 
 
 def test_run_embedding_stage_mid_run_failure_is_partial_not_crash(tmp_path, monkeypatch):
@@ -522,10 +567,279 @@ def test_run_embedding_stage_mid_run_failure_is_partial_not_crash(tmp_path, monk
     assert result.status == embedding.EMBED_PARTIAL
     assert "repo.b" in result.reason
     # repo.a completed for real before the failure.
-    assert result.vectors_by_repo["repo.a"]
+    assert len(result.vectors_by_repo["repo.a"])
     # repo.c (not yet reached when the failure hit) fell back to its
     # previous published vector rather than being lost or crashing.
-    assert result.vectors_by_repo["repo.c"]["repo.c\x1fsrc/z.py\x1fZeta"] == [3.0]
+    assert list(result.vectors_by_repo["repo.c"].get("repo.c\x1fsrc/z.py\x1fZeta")) == [3.0]
+
+
+# ---------------------------------------------------------------------------
+# shard format v2: writer + version-aware reader
+# ---------------------------------------------------------------------------
+
+
+def test_stage_embeddings_writes_v2_meta_and_npy(tmp_path):
+    vectors = RepoVectors.from_mapping({"repo.a\x1fsrc/w.py\x1fWidget": [1.0, 2.0]})
+    shard = embedding.RepoShard(
+        entries={"repo.a\x1fsrc/w.py\x1fWidget": {"content_hash": "abc", "row": 0}},
+        vectors=vectors,
+    )
+    out_dir = embedding.stage_embeddings(tmp_path, {"repoA": shard}, id_map={})
+
+    meta = json.loads((out_dir / "repoA.meta.json").read_text())
+    assert meta["shard_format"] == embedding.SHARD_FORMAT_VERSION
+    assert meta["repo_id"] == "repoA"
+    assert meta["dim"] == 2
+
+    matrix = np.load(out_dir / "repoA.npy")
+    assert matrix.dtype == np.float32
+    assert matrix.shape[0] == sum(1 for e in meta["entries"].values() if e["row"] is not None)
+
+
+def test_read_previous_shard_v1_json_compat(tmp_path):
+    (tmp_path / "repoA.json").write_text(
+        json.dumps(
+            {
+                "repo_id": "repoA",
+                "entries": {
+                    "k1": {"content_hash": "h1", "embedding": [1.0, 0.0]},
+                    "k2": {"content_hash": None, "embedding": None},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    shard = embedding.read_previous_shard(tmp_path, "repoA")
+    assert shard.entries["k1"]["content_hash"] == "h1"
+    assert shard.vectors.get("k1") is not None
+    assert list(shard.vectors.get("k1")) == pytest.approx([1.0, 0.0])
+    assert shard.entries["k2"]["row"] is None
+    assert shard.vectors.get("k2") is None
+
+
+def test_read_previous_shard_v2_roundtrip(tmp_path):
+    vectors = RepoVectors.from_mapping(
+        {"k1": [1.0, 2.0], "k2": [3.0, 4.0]}
+    )
+    shard = embedding.RepoShard(
+        entries={
+            "k1": {"content_hash": "h1", "row": 0},
+            "k2": {"content_hash": "h2", "row": 1},
+        },
+        vectors=vectors,
+    )
+    out_dir = embedding.stage_embeddings(tmp_path, {"repoA": shard}, id_map={})
+
+    read_back = embedding.read_previous_shard(out_dir, "repoA")
+    assert read_back.entries["k1"]["content_hash"] == "h1"
+    assert read_back.entries["k2"]["content_hash"] == "h2"
+    assert list(read_back.vectors.get("k1")) == pytest.approx([1.0, 2.0])
+    assert list(read_back.vectors.get("k2")) == pytest.approx([3.0, 4.0])
+
+
+def test_read_previous_shard_v2_missing_npy_is_empty(tmp_path):
+    vectors = RepoVectors.from_mapping({"k1": [1.0, 2.0]})
+    shard = embedding.RepoShard(
+        entries={"k1": {"content_hash": "h1", "row": 0}}, vectors=vectors
+    )
+    out_dir = embedding.stage_embeddings(tmp_path, {"repoA": shard}, id_map={})
+    (out_dir / "repoA.npy").unlink()
+
+    read_back = embedding.read_previous_shard(out_dir, "repoA")
+    assert read_back.entries == {}
+    assert len(read_back.vectors) == 0
+
+
+# ---------------------------------------------------------------------------
+# v2 reader hardening: reject malformed/adversarial meta+matrix combinations
+# BEFORE building a RepoVectors from them, degrading to empty shard instead
+# of raising or (worse) silently trusting bad row assignments.
+# ---------------------------------------------------------------------------
+
+
+def _write_raw_v2_shard(
+    out_dir: Path, repo_id: str, entries: dict, matrix: np.ndarray, dim: int | None = None
+) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    meta = {
+        "repo_id": repo_id,
+        "shard_format": embedding.SHARD_FORMAT_VERSION,
+        "dim": matrix.shape[1] if dim is None else dim,
+        "entries": entries,
+    }
+    (out_dir / f"{repo_id}.meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    np.save(out_dir / f"{repo_id}.npy", matrix)
+
+
+def test_read_previous_shard_v2_duplicate_row_is_empty(tmp_path):
+    # ONE-row matrix with BOTH entries claiming that same row 0: every row
+    # (there's only one) is "owned", so the unowned-row guard alone would
+    # let this through — only explicit duplicate-claim detection catches it.
+    matrix = np.array([[1.0, 2.0]], dtype=np.float32)
+    entries = {
+        "k1": {"content_hash": "h1", "row": 0},
+        "k2": {"content_hash": "h2", "row": 0},  # duplicate claim on row 0
+    }
+    _write_raw_v2_shard(tmp_path, "repoA", entries, matrix)
+
+    shard = embedding.read_previous_shard(tmp_path, "repoA")
+    assert shard.entries == {}
+    assert len(shard.vectors) == 0
+
+
+def test_read_previous_shard_v2_unhashable_shard_format_is_empty(tmp_path):
+    # meta.get("shard_format") in SUPPORTED_SHARD_FORMATS (a frozenset) would
+    # raise TypeError for an unhashable JSON value like a list — must be
+    # rejected before the membership test, not raise.
+    matrix = np.array([[1.0, 2.0]], dtype=np.float32)
+    entries = {"k1": {"content_hash": "h1", "row": 0}}
+    out_dir = tmp_path
+    out_dir.mkdir(parents=True, exist_ok=True)
+    meta = {
+        "repo_id": "repoA",
+        "shard_format": [],  # unhashable
+        "dim": 2,
+        "entries": entries,
+    }
+    (out_dir / "repoA.meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    np.save(out_dir / "repoA.npy", matrix)
+
+    shard = embedding.read_previous_shard(out_dir, "repoA")
+    assert shard.entries == {}
+    assert len(shard.vectors) == 0
+
+
+def test_read_previous_shard_v2_dim_mismatch_is_empty(tmp_path):
+    matrix = np.array([[1.0, 2.0]], dtype=np.float32)
+    entries = {"k1": {"content_hash": "h1", "row": 0}}
+    _write_raw_v2_shard(tmp_path, "repoA", entries, matrix, dim=99)
+
+    shard = embedding.read_previous_shard(tmp_path, "repoA")
+    assert shard.entries == {}
+    assert len(shard.vectors) == 0
+
+
+def test_read_previous_shard_v2_wrong_dtype_is_empty(tmp_path):
+    matrix = np.array([[1.0, 2.0]], dtype=np.float64)  # wrong dtype, not float32
+    entries = {"k1": {"content_hash": "h1", "row": 0}}
+    _write_raw_v2_shard(tmp_path, "repoA", entries, matrix)
+
+    shard = embedding.read_previous_shard(tmp_path, "repoA")
+    assert shard.entries == {}
+    assert len(shard.vectors) == 0
+
+
+def test_read_previous_shard_v2_one_dimensional_matrix_is_empty(tmp_path):
+    out_dir = tmp_path
+    out_dir.mkdir(parents=True, exist_ok=True)
+    meta = {
+        "repo_id": "repoA",
+        "shard_format": embedding.SHARD_FORMAT_VERSION,
+        "dim": 2,
+        "entries": {"k1": {"content_hash": "h1", "row": 0}},
+    }
+    (out_dir / "repoA.meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    np.save(out_dir / "repoA.npy", np.array([1.0, 2.0], dtype=np.float32))  # 1-D, not 2-D
+
+    shard = embedding.read_previous_shard(out_dir, "repoA")
+    assert shard.entries == {}
+    assert len(shard.vectors) == 0
+
+
+def test_read_previous_shard_v2_entries_not_dict_is_empty(tmp_path):
+    out_dir = tmp_path
+    out_dir.mkdir(parents=True, exist_ok=True)
+    meta = {
+        "repo_id": "repoA",
+        "shard_format": embedding.SHARD_FORMAT_VERSION,
+        "dim": 2,
+        "entries": ["not", "a", "dict"],  # entries must be a dict
+    }
+    (out_dir / "repoA.meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    np.save(out_dir / "repoA.npy", np.zeros((0, 2), dtype=np.float32))
+
+    shard = embedding.read_previous_shard(out_dir, "repoA")
+    assert shard.entries == {}
+    assert len(shard.vectors) == 0
+
+
+def test_read_previous_shard_v2_row_out_of_range_is_empty(tmp_path):
+    matrix = np.array([[1.0, 2.0]], dtype=np.float32)
+    entries = {"k1": {"content_hash": "h1", "row": 5}}  # out of range, n_rows=1
+    _write_raw_v2_shard(tmp_path, "repoA", entries, matrix)
+
+    shard = embedding.read_previous_shard(tmp_path, "repoA")
+    assert shard.entries == {}
+    assert len(shard.vectors) == 0
+
+
+def test_read_previous_shard_v2_bool_row_is_empty(tmp_path):
+    matrix = np.array([[1.0, 2.0]], dtype=np.float32)
+    entries = {"k1": {"content_hash": "h1", "row": True}}  # bool is not an int row index
+    _write_raw_v2_shard(tmp_path, "repoA", entries, matrix)
+
+    shard = embedding.read_previous_shard(tmp_path, "repoA")
+    assert shard.entries == {}
+    assert len(shard.vectors) == 0
+
+
+def test_read_previous_shard_v2_permuted_rows_reordered_to_sorted_keys(tmp_path):
+    """`RepoVectors` requires row i <-> keys[i] in SORTED order. A shard
+    whose meta rows are NOT in sorted-key order (here: row 0 -> "z", row 1
+    -> "a" — the reverse of sorted order) must still load with `keys`
+    sorted and each key's vector matching its OWN row — exercises the sync
+    side's `_read_v2_shard` -> `RepoVectors.from_rows` path, mirroring the
+    server-side parity test in tests/server/test_store.py."""
+    entries = {
+        "z": {"content_hash": "hz", "row": 0},
+        "a": {"content_hash": "ha", "row": 1},
+    }
+    matrix = np.array([[9.0, 9.0], [1.0, 2.0]], dtype=np.float32)  # row0="z", row1="a"
+    _write_raw_v2_shard(tmp_path, "repoA", entries, matrix)
+
+    shard = embedding.read_previous_shard(tmp_path, "repoA")
+    assert shard.vectors.keys == ["a", "z"]  # sorted
+    assert list(shard.vectors.get("a")) == pytest.approx([1.0, 2.0])
+    assert list(shard.vectors.get("z")) == pytest.approx([9.0, 9.0])
+
+
+def test_read_previous_shard_v1_invalid_utf8_is_empty_no_exception(tmp_path):
+    (tmp_path / "repoA.json").write_bytes(b"\xff\xfe{not valid utf-8")
+
+    shard = embedding.read_previous_shard(tmp_path, "repoA")
+    assert shard.entries == {}
+    assert len(shard.vectors) == 0
+
+
+def test_read_previous_shard_v2_meta_invalid_utf8_is_empty_no_exception(tmp_path):
+    out_dir = tmp_path
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "repoA.meta.json").write_bytes(b"\xff\xfe{not valid utf-8")
+    np.save(out_dir / "repoA.npy", np.zeros((0, 2), dtype=np.float32))
+
+    shard = embedding.read_previous_shard(out_dir, "repoA")
+    assert shard.entries == {}
+    assert len(shard.vectors) == 0
+
+
+def test_read_previous_shard_v2_takes_priority_over_stale_v1(tmp_path):
+    # If both a v1 .json and v2 .meta.json/.npy exist for the same repo_id
+    # (e.g. leftover from an older generation dir), v2 must win.
+    vectors = RepoVectors.from_mapping({"k1": [1.0]})
+    shard = embedding.RepoShard(
+        entries={"k1": {"content_hash": "h1", "row": 0}}, vectors=vectors
+    )
+    out_dir = embedding.stage_embeddings(tmp_path, {"repoA": shard}, id_map={})
+    (out_dir / "repoA.json").write_text(
+        json.dumps(
+            {"repo_id": "repoA", "entries": {"stale": {"content_hash": "x", "embedding": [9.0]}}}
+        ),
+        encoding="utf-8",
+    )
+
+    read_back = embedding.read_previous_shard(out_dir, "repoA")
+    assert "stale" not in read_back.entries
+    assert "k1" in read_back.entries
 
 
 # ---------------------------------------------------------------------------

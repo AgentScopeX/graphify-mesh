@@ -32,6 +32,12 @@ dependencies = [
     #   at merge time — this is a real importable dependency, not just a CLI
     #   on PATH, so it must be declared here.
     "graphifyy>=0.9.20,<1.0",
+    # numpy: float32 embedding matrices (sync shard build, overlay ANN
+    #   similarity, server query scoring) + .npy shard-format-2 artifacts
+    #   loaded with mmap on the read side. Replaced pure-Python list[float]
+    #   vectors that cost ~8x the RAM at 38K nodes (see
+    #   docs/superpowers/plans/2026-07-21-numpy-embeddings.md).
+    "numpy>=1.26,<3",
 ]
 
 [project.optional-dependencies]

@@ -3,10 +3,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from graphify_mesh.server.config import ServerConfig
 from graphify_mesh.server.store import GenerationStore, GenerationUnavailableError
+from graphify_mesh.server.store import validate_manifest_consistency
+from graphify_mesh.sync.embedding import RepoShard, stage_embeddings
+from graphify_mesh.sync.vectors import RepoVectors
 
 
 def _write_generation(
@@ -65,6 +69,21 @@ def _config(tmp_path: Path) -> ServerConfig:
     )
 
 
+def test_validate_manifest_accepts_schema_2_and_3():
+    for version in (2, 3):
+        manifest = {"lexical_index_schema_version": version}
+        lexical = {"schema_version": version}
+        errors = validate_manifest_consistency(manifest, {}, lexical)
+        assert not any("schema_version" in e for e in errors)
+
+
+def test_validate_manifest_rejects_unknown_schema():
+    manifest = {"lexical_index_schema_version": 99}
+    lexical = {"schema_version": 99}
+    errors = validate_manifest_consistency(manifest, {}, lexical)
+    assert any("schema_version" in e for e in errors)
+
+
 def test_no_generation_published_raises_generation_unavailable(tmp_path):
     store = GenerationStore(_config(tmp_path))
     with pytest.raises(GenerationUnavailableError):
@@ -86,6 +105,83 @@ def test_loads_valid_generation_and_builds_indexes(tmp_path):
     assert store.degraded == [
         "embeddings_unavailable"
     ]  # no embeddings dir published in this fixture
+
+
+def test_missing_lexical_file_is_degraded_not_an_error(tmp_path):
+    """Absence of `lexical-index.json` is the documented degraded state
+    (lexical/structural still serve) and must NOT produce a validation
+    error — distinct from a present-but-corrupt file (see next test)."""
+    config = _config(tmp_path)
+    _write_generation(
+        config.global_dir,
+        "gen-1",
+        [{"id": "n1", "repo": "repo.a", "label": "Alpha", "source_file": "a.py"}],
+    )
+    gen_dir = config.global_dir / "generations" / "gen-1"
+    (gen_dir / "lexical-index.json").unlink()
+
+    store = GenerationStore(config)
+    generation = store.generation
+    assert generation.generation_id == "gen-1"
+    assert generation.lexical == {}
+    assert not any("lexical-index" in reason for reason in store.degraded)
+
+
+def test_present_but_corrupt_lexical_file_is_validation_error(tmp_path):
+    """A `lexical-index.json` that exists but is not parseable JSON (or
+    parses to something other than a JSON object) is a real artifact
+    problem, not a degraded-absence state — must be surfaced as a
+    validation error and the generation rejected."""
+    config = _config(tmp_path)
+    _write_generation(
+        config.global_dir,
+        "gen-1",
+        [{"id": "n1", "repo": "repo.a", "label": "Alpha", "source_file": "a.py"}],
+    )
+    gen_dir = config.global_dir / "generations" / "gen-1"
+    (gen_dir / "lexical-index.json").write_text("{not valid json", encoding="utf-8")
+
+    store = GenerationStore(config)
+    with pytest.raises(GenerationUnavailableError):
+        _ = store.generation
+    assert any("lexical-index" in reason for reason in store.degraded)
+
+
+def test_present_but_invalid_utf8_lexical_file_is_validation_error(tmp_path):
+    """A `lexical-index.json` containing invalid UTF-8 bytes must raise
+    UnicodeDecodeError on read — surfaced as the same validation error as
+    unparseable JSON, not an uncaught crash."""
+    config = _config(tmp_path)
+    _write_generation(
+        config.global_dir,
+        "gen-1",
+        [{"id": "n1", "repo": "repo.a", "label": "Alpha", "source_file": "a.py"}],
+    )
+    gen_dir = config.global_dir / "generations" / "gen-1"
+    (gen_dir / "lexical-index.json").write_bytes(b"\xff\xfe{")
+
+    store = GenerationStore(config)
+    with pytest.raises(GenerationUnavailableError):
+        _ = store.generation
+    assert any("lexical-index" in reason for reason in store.degraded)
+
+
+def test_present_but_non_dict_lexical_file_is_validation_error(tmp_path):
+    """Parses fine as JSON but is not a JSON object (e.g. a bare list) —
+    still a real artifact problem, same as unparseable JSON."""
+    config = _config(tmp_path)
+    _write_generation(
+        config.global_dir,
+        "gen-1",
+        [{"id": "n1", "repo": "repo.a", "label": "Alpha", "source_file": "a.py"}],
+    )
+    gen_dir = config.global_dir / "generations" / "gen-1"
+    (gen_dir / "lexical-index.json").write_text(json.dumps(["not", "an", "object"]), encoding="utf-8")
+
+    store = GenerationStore(config)
+    with pytest.raises(GenerationUnavailableError):
+        _ = store.generation
+    assert any("lexical-index" in reason for reason in store.degraded)
 
 
 def test_inconsistent_manifest_rejected_all_or_nothing_keeps_previous(tmp_path):
@@ -143,8 +239,9 @@ def test_inconsistent_manifest_rejected_all_or_nothing_keeps_previous(tmp_path):
 def test_stale_lexical_schema_version_rejected(tmp_path):
     """A `lexical-index.json` published with an old schema_version (e.g. the
     pre-fix v1 per-entry-dict shape) must be rejected rather than served —
-    this server's readers assume v2 compact arrays and would misindex into
-    a v1 dict's keys otherwise."""
+    this server's readers only understand the supported v2/v3 shapes
+    (`SUPPORTED_LEXICAL_SCHEMA_VERSIONS`) and would misindex into a v1
+    dict's keys otherwise."""
     config = _config(tmp_path)
     _write_generation(
         config.global_dir,
@@ -250,4 +347,144 @@ def test_load_embeddings_tolerates_malformed_shards(tmp_path):
 
     out = _load_embeddings(tmp_path)
     assert "bad.repo" not in out
-    assert out["half.repo"] == {"b": [1.0]}
+    assert out["half.repo"].to_mapping() == {"b": [1.0]}
+
+
+# --- _load_embeddings: v1/v2 shard format parity ------------------------
+
+
+def _repo_shard(raw_vectors: dict[str, list[float]]) -> RepoShard:
+    """Builds a RepoShard the way the sync pipeline would: RepoVectors from
+    a plain mapping, plus an `entries` dict recording each key's matrix
+    row — mirrors `_read_v1_shard`'s post-build bookkeeping in
+    `graphify_mesh.sync.embedding`."""
+    vectors = RepoVectors.from_mapping(raw_vectors)
+    entries = {key: {"content_hash": None, "row": None} for key in vectors.keys}
+    for row, key in enumerate(vectors.keys):
+        entries[key]["row"] = row
+    return RepoShard(entries=entries, vectors=vectors)
+
+
+def test_load_embeddings_v1_dir_and_v2_dir_produce_equal_mapping(tmp_path):
+    from graphify_mesh.server.store import _load_embeddings
+
+    raw = {"k1": [1.0, 0.0], "k2": [0.0, 1.0]}
+
+    v1_dir = tmp_path / "v1"
+    v1_dir.mkdir()
+    (v1_dir / "repo.a.json").write_text(
+        json.dumps(
+            {
+                "repo_id": "repo.a",
+                "entries": {
+                    key: {"content_hash": None, "embedding": vec} for key, vec in raw.items()
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    v2_dir = stage_embeddings(tmp_path / "v2-staging", {"repo.a": _repo_shard(raw)}, id_map={})
+
+    v1_out = _load_embeddings(v1_dir)
+    v2_out = _load_embeddings(v2_dir)
+
+    assert v1_out.keys() == v2_out.keys()
+    assert v1_out["repo.a"].to_mapping() == v2_out["repo.a"].to_mapping()
+
+
+def test_load_embeddings_v2_skips_unsupported_shard_format_others_still_load(tmp_path):
+    from graphify_mesh.server.store import _load_embeddings
+
+    (tmp_path / "bad.repo.meta.json").write_text(
+        json.dumps({"repo_id": "bad.repo", "shard_format": 99, "dim": 2, "entries": {}}),
+        encoding="utf-8",
+    )
+    np.save(tmp_path / "bad.repo.npy", np.zeros((0, 2), dtype=np.float32))
+
+    (tmp_path / "ok.repo.meta.json").write_text(
+        json.dumps(
+            {
+                "repo_id": "ok.repo",
+                "shard_format": 2,
+                "dim": 2,
+                "entries": {"k": {"content_hash": None, "row": 0}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    np.save(tmp_path / "ok.repo.npy", np.array([[1.0, 0.0]], dtype=np.float32))
+
+    out = _load_embeddings(tmp_path)
+    assert "bad.repo" not in out
+    assert out["ok.repo"].to_mapping() == {"k": [1.0, 0.0]}
+
+
+# --- _load_embeddings: v2 sorted-keys invariant -------------------------
+
+
+def test_load_embeddings_v2_permuted_rows_reordered_to_sorted_keys(tmp_path):
+    """`RepoVectors` requires row i <-> keys[i] in SORTED order. A shard
+    whose meta rows are NOT in sorted-key order (here: row 0 -> "z", row 1
+    -> "a" — the reverse of sorted order) must still load with `keys`
+    sorted and each key's vector matching its OWN row, not silently
+    reinterpreted through the wrong permutation."""
+    from graphify_mesh.server.store import _load_embeddings
+
+    (tmp_path / "perm.repo.meta.json").write_text(
+        json.dumps(
+            {
+                "repo_id": "perm.repo",
+                "shard_format": 2,
+                "dim": 2,
+                "entries": {
+                    "z": {"content_hash": None, "row": 0},
+                    "a": {"content_hash": None, "row": 1},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    np.save(
+        tmp_path / "perm.repo.npy",
+        np.array([[9.0, 9.0], [1.0, 2.0]], dtype=np.float32),  # row0="z", row1="a"
+    )
+
+    out = _load_embeddings(tmp_path)
+    rv = out["perm.repo"]
+    assert rv.keys == ["a", "z"]  # sorted
+    assert rv.get("a") is not None
+    assert rv.get("z") is not None
+    assert list(rv.get("a")) == pytest.approx([1.0, 2.0])
+    assert list(rv.get("z")) == pytest.approx([9.0, 9.0])
+
+
+def test_load_embeddings_v2_canonical_shard_keeps_mmap(tmp_path):
+    """Canonical (already-sorted-key-order) shards must keep the mmap
+    array as-is — no copy — since that is the whole point of the v2
+    read side (server never eagerly loads the full matrix into RAM)."""
+    from graphify_mesh.server.store import _load_embeddings
+
+    (tmp_path / "ok.repo.meta.json").write_text(
+        json.dumps(
+            {
+                "repo_id": "ok.repo",
+                "shard_format": 2,
+                "dim": 2,
+                "entries": {
+                    "a": {"content_hash": None, "row": 0},
+                    "z": {"content_hash": None, "row": 1},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    np.save(
+        tmp_path / "ok.repo.npy",
+        np.array([[1.0, 2.0], [9.0, 9.0]], dtype=np.float32),
+    )
+
+    out = _load_embeddings(tmp_path)
+    rv = out["ok.repo"]
+    assert rv.keys == ["a", "z"]
+    assert isinstance(rv.matrix, np.memmap)
