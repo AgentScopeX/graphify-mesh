@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
 name = "graphify-mesh"
-version = "0.0.2"
+dynamic = ["version"]
 description = "Scheduled sync engine + companion MCP server that merges many per-repo graphify knowledge graphs into one repo-attributed, human-named global graph with a cross-project dependency/similarity/API overlay."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -46,6 +46,17 @@ Repository = "https://github.com/AgentScopeX/graphify-mesh"
 graphify-mesh-sync = "graphify_mesh.sync.cli:main"
 graphify-mesh-server = "graphify_mesh.server.server:main"
 graphify-mesh-reap = "graphify_mesh.sync.reaper_cli:main"
+
+[tool.hatch.version]
+# Single source of truth for the version is the git tag itself (vX.Y.Z) —
+# no more manually-maintained __version__ string that can drift out of sync
+# with what was actually tagged/released (see CHANGELOG 0.0.4: __version__
+# was stuck at 0.0.2 across the v0.0.3/v0.0.4 tags because nobody remembered
+# to bump the static string before tagging).
+source = "vcs"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/graphify_mesh/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/graphify_mesh"]
