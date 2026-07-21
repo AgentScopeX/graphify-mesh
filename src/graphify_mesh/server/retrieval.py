@@ -42,15 +42,18 @@ class RankedResult:
 def exact_alias_hits(query: str, lexical: dict, repo_filter: frozenset[str] | None) -> list[str]:
     """Exact FQCN/label bypass candidates (WS5 fusion contract): looked up
     via the lexical index's O(1) `alias_exact` table, normalized with the
-    SAME normalization the index was built with (`normalize_alias_query`)."""
+    SAME normalization the index was built with (`normalize_alias_query`).
+
+    Entries are the schema_version 2 compact `[repo, key]` array shape
+    (not the old `{"repo": r, "key": k}` dict) — see `lexical_index.py`."""
     if not query or not query.strip():
         return []
     norm = normalize_alias_query(query.strip())
     entries = lexical.get("alias_exact", {}).get(norm, [])
     keys = {
-        e["key"]
+        e[1]
         for e in entries
-        if isinstance(e, dict) and (repo_filter is None or e.get("repo") in repo_filter)
+        if isinstance(e, list) and len(e) == 2 and (repo_filter is None or e[0] in repo_filter)
     }
     return sorted(keys)
 
@@ -61,12 +64,17 @@ def lexical_candidates(
     repo_filter: frozenset[str] | None,
     depth: int = ranking.CANDIDATE_DEPTH_LEXICAL,
 ) -> list[str]:
+    """Postings entries are the schema_version 2 compact `[repo, key, field]`
+    array shape. `weight` is no longer stored per-entry — it is derived from
+    the bundle's own `field_boosts` table so this reader stays decoupled
+    from the writer's internal `FIELD_BOOSTS` constant name."""
     tokens = tokenize_text(query)
     if not tokens:
         return []
     postings = lexical.get("postings", {})
     doc_freq_global = lexical.get("doc_freq", {}).get("global", {})
     total_docs = max(lexical.get("document_count", 1), 1)
+    field_boosts = lexical.get("field_boosts", {})
 
     scores: dict[str, float] = {}
     for term in tokens:
@@ -74,15 +82,15 @@ def lexical_candidates(
         df = doc_freq_global.get(term, len(entries)) or 1
         idf = math.log(1 + (total_docs / df))
         for entry in entries:
-            if not isinstance(entry, dict):
-                continue
-            if repo_filter is not None and entry.get("repo") not in repo_filter:
-                continue
-            key = entry.get("key")
-            if key is None:
+            if not isinstance(entry, list) or len(entry) != 3:
                 # Malformed index entry: tolerate and skip, never crash.
                 continue
-            weight = entry.get("weight", 1.0)
+            repo, key, field_name = entry
+            if repo_filter is not None and repo not in repo_filter:
+                continue
+            if key is None:
+                continue
+            weight = field_boosts.get(field_name, 1.0)
             scores[key] = scores.get(key, 0.0) + weight * idf
 
     ranked = sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))

@@ -71,4 +71,7 @@ def test_prune_removes_incomplete_generation_regardless_of_keep_count(tmp_path):
 
 
 def test_prune_no_generations_dir_is_a_no_op(tmp_path):
-    assert publish.prune_old_generations(tmp_path / "does-not-exist", tmp_path / "current", keep=2) == []
+    removed = publish.prune_old_generations(
+        tmp_path / "does-not-exist", tmp_path / "current", keep=2
+    )
+    assert removed == []

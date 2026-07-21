@@ -16,7 +16,11 @@ def _write_generation(
     `global_dir/generations/<id>/` and flips `current` to point at it —
     mirrors `graphify_mesh.sync.publish` closely enough for store.py's
     consistency gate without depending on the sync package's I/O helpers."""
-    from graphify_mesh.sync.lexical_index import TOKENIZER_VERSION, build_lexical_index
+    from graphify_mesh.sync.lexical_index import (
+        LEXICAL_SCHEMA_VERSION,
+        TOKENIZER_VERSION,
+        build_lexical_index,
+    )
     from graphify_mesh.sync.publish import output_hash
 
     graph = {"nodes": nodes, "links": links or []}
@@ -39,6 +43,7 @@ def _write_generation(
         "labeling": "skipped",
         "stale_repos": [],
         "lexical_index_tokenizer_version": TOKENIZER_VERSION,
+        "lexical_index_schema_version": LEXICAL_SCHEMA_VERSION,
     }
 
     gen_dir = global_dir / "generations" / generation_id
@@ -133,6 +138,62 @@ def test_inconsistent_manifest_rejected_all_or_nothing_keeps_previous(tmp_path):
     assert second.generation_id == "gen-1"  # still serving the last-good generation
     assert "reload_rejected_previous_generation_still_serving" in store.degraded
     assert any("output_node_count" in reason for reason in store.degraded)
+
+
+def test_stale_lexical_schema_version_rejected(tmp_path):
+    """A `lexical-index.json` published with an old schema_version (e.g. the
+    pre-fix v1 per-entry-dict shape) must be rejected rather than served —
+    this server's readers assume v2 compact arrays and would misindex into
+    a v1 dict's keys otherwise."""
+    config = _config(tmp_path)
+    _write_generation(
+        config.global_dir,
+        "gen-1",
+        [{"id": "n1", "repo": "repo.a", "label": "Alpha", "source_file": "a.py"}],
+    )
+    store = GenerationStore(config)
+    first = store.generation
+    assert first.generation_id == "gen-1"
+
+    gen2_dir = config.global_dir / "generations" / "gen-2"
+    gen2_dir.mkdir(parents=True)
+    graph = {
+        "nodes": [{"id": "n1", "repo": "repo.a", "label": "Alpha", "source_file": "a.py"}],
+        "links": [],
+    }
+    (gen2_dir / "global-graph.json").write_text(json.dumps(graph), encoding="utf-8")
+    (gen2_dir / "generation-manifest.json").write_text(
+        json.dumps(
+            {
+                "generation_id": "gen-2",
+                "created_at": "2026-07-20T00:00:00Z",
+                "repo_input_hashes": {},
+                "registry_hash": "test",
+                "config_hash": "test",
+                "output_node_count": 1,
+                "output_edge_count": 0,
+                "clustering_backend": "louvain",
+                "embedding_model": "test-model",
+                "labeling": "skipped",
+                "stale_repos": [],
+                "lexical_index_schema_version": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (gen2_dir / "cross-project-overlay.json").write_text(
+        json.dumps({"edges": []}), encoding="utf-8"
+    )
+    (gen2_dir / "lexical-index.json").write_text(
+        json.dumps({"schema_version": 1, "postings": {}, "alias_exact": {}}), encoding="utf-8"
+    )
+    current = config.global_dir / "current"
+    current.unlink()
+    current.symlink_to(gen2_dir, target_is_directory=True)
+
+    second = store.generation
+    assert second.generation_id == "gen-1"
+    assert any("schema_version" in reason for reason in store.degraded)
 
 
 def test_hot_reload_picks_up_new_valid_generation(tmp_path):

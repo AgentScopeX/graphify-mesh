@@ -64,12 +64,16 @@ def test_build_lexical_index_field_boosts_and_determinism():
     assert result1.data == result2.data  # deterministic given identical input
     assert result1.stats.documents == 2
 
+    # schema_version 2: compact `[repo, key, field]` arrays, no per-entry
+    # "weight" — weight is derived from `field_boosts` at read time.
     label_postings = result1.data["postings"]["alphaclass"]
-    assert label_postings[0]["field"] == "label"
-    assert label_postings[0]["weight"] == lexical_index.FIELD_BOOST_LABEL
+    assert isinstance(label_postings[0], list)
+    assert len(label_postings[0]) == 3
+    assert label_postings[0][2] == "label"
+    assert result1.data["field_boosts"]["label"] == lexical_index.FIELD_BOOST_LABEL
 
     path_postings = result1.data["postings"]["alpha"]
-    assert any(p["field"] == "path" for p in path_postings)
+    assert any(p[2] == "path" for p in path_postings)
 
 
 def test_build_lexical_index_alias_exact_and_node_id_index():
@@ -81,8 +85,41 @@ def test_build_lexical_index_alias_exact_and_node_id_index():
     result = lexical_index.build_lexical_index(graphs_by_repo, {})
     assert "timeservice" in result.data["alias_exact"]
     entry = result.data["alias_exact"]["timeservice"][0]
-    assert entry["repo"] == "repo.a"
+    # schema_version 2: compact `[repo, key]` array, not `{"repo": ..., "key": ...}`.
+    assert isinstance(entry, list)
+    assert len(entry) == 2
+    assert entry[0] == "repo.a"
     assert "repo.a\x1fn1" in result.data["node_id_index"]
+
+
+def test_build_lexical_index_no_dict_entries_or_weight_key():
+    """Regression guard (production OOM fix): postings/alias_exact entries
+    must be compact arrays, and `weight` must never appear anywhere in a
+    built index — a future accidental regression back to per-entry dicts
+    would reintroduce the peak-RSS/on-disk-size blowup that caused real
+    OOM kills of graphify-mesh-sync."""
+    graphs_by_repo = {
+        "repo.a": {
+            "nodes": [
+                {"id": "n1", "label": "AlphaClass", "source_file": "src/alpha.py"},
+                {"id": "n2", "label": "TimeService", "source_file": "src/TimeService.php"},
+            ]
+        }
+    }
+    result = lexical_index.build_lexical_index(graphs_by_repo, {})
+    assert result.data["schema_version"] == lexical_index.LEXICAL_SCHEMA_VERSION
+
+    for entries in result.data["postings"].values():
+        for entry in entries:
+            assert isinstance(entry, list)
+            assert len(entry) == 3
+            assert "weight" not in entry
+
+    for entries in result.data["alias_exact"].values():
+        for entry in entries:
+            assert isinstance(entry, list)
+            assert len(entry) == 2
+            assert "weight" not in entry
 
 
 def test_pipeline_publishes_lexical_index_artifact(env):
@@ -100,9 +137,11 @@ def test_pipeline_publishes_lexical_index_artifact(env):
     assert lexical_path.is_file()
     data = json.loads(lexical_path.read_text(encoding="utf-8"))
     assert data["tokenizer_version"] == lexical_index.TOKENIZER_VERSION
+    assert data["schema_version"] == lexical_index.LEXICAL_SCHEMA_VERSION
     assert data["postings"]
 
     manifest = json.loads(
         (settings.global_dir / "current" / "generation-manifest.json").read_text(encoding="utf-8")
     )
     assert manifest["lexical_index_tokenizer_version"] == lexical_index.TOKENIZER_VERSION
+    assert manifest["lexical_index_schema_version"] == lexical_index.LEXICAL_SCHEMA_VERSION

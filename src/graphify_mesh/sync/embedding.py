@@ -676,20 +676,28 @@ def persist_generation(
     # crash right after rename can leave the flip unwritten on disk.
     _fsync_dir(embeddings_dir)
 
-    gc_old_generations(generations_dir, keep)
+    gc_old_generations(generations_dir, keep, current=current)
 
 
-def gc_old_generations(generations_dir: Path, keep: int) -> list[str]:
+def gc_old_generations(generations_dir: Path, keep: int, current: Path | None = None) -> list[str]:
     """Keep only the `keep` most-recently-created generation dirs (sorted by
     directory name, which is the pipeline's lexicographically-sortable
     timestamp-prefixed generation_id — same ordering convention as
-    `publish.write_generation`). Returns the list of removed generation_ids."""
+    `publish.write_generation`). The generation `current` points at is
+    always pinned regardless of sort order (mirrors
+    publish.prune_old_generations: clock skew must never delete the live
+    generation). Returns the list of removed generation_ids."""
     if not generations_dir.is_dir():
         return []
+    current_name = None
+    if current is not None and current.exists():
+        current_name = os.path.basename(os.path.realpath(current))
     gen_dirs = sorted((p for p in generations_dir.iterdir() if p.is_dir()), key=lambda p: p.name)
     to_remove = gen_dirs[:-keep] if keep > 0 else gen_dirs
     removed = []
     for gen_dir in to_remove:
+        if gen_dir.name == current_name:
+            continue
         shutil.rmtree(gen_dir, ignore_errors=True)
         removed.append(gen_dir.name)
     return removed

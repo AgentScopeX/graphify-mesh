@@ -60,6 +60,18 @@ LEXICAL_INDEX_FILENAME = "lexical-index.json"
 # index rather than silently misinterpreting it.
 TOKENIZER_VERSION = "gm-lex-v1"
 
+# Bumped whenever the ON-DISK SHAPE of `postings`/`alias_exact` entries
+# changes (independent of tokenization rules — TOKENIZER_VERSION covers
+# term-splitting, this covers container shape). v2 replaced the per-entry
+# `{"repo": r, "key": k, "field": f, "weight": w}` dict with a compact
+# `[repo, key, field]` array (postings) / `[repo, key]` array (alias_exact):
+# dict overhead was the dominant peak-RSS cost building the index across
+# ~38K real nodes (OOM at the 4G cgroup cap), and `weight` was always a
+# redundant lookup of `FIELD_BOOSTS[field]`, itself already published under
+# `field_boosts`. The server's own reader must reject a mismatch here rather
+# than silently indexing into what it assumes are dicts.
+LEXICAL_SCHEMA_VERSION = 2
+
 # Field boosts (label > path > snippet), per plan WS5 lexical-index bullet.
 # Named constants, not magic numbers, per project style rule.
 FIELD_BOOST_LABEL = 3.0
@@ -196,8 +208,15 @@ def build_lexical_index(
     dict, and doc-frequency counters are plain per-term integers — nothing
     here depends on dict iteration order or wall-clock time.
     """
-    postings: dict[str, list[tuple[str, str, str]]] = {}
-    alias_exact: dict[str, list[tuple[str, str]]] = {}
+    # Accumulate directly into `set[tuple]` rather than `list[tuple]` +
+    # `set(...)` at the end: the raw walk produces duplicate (repo, key,
+    # field) tuples across a doc's own field/subtoken tokenization, and
+    # deduping DURING accumulation avoids ever materializing the
+    # undeduped list (which was strictly larger and thrown away a few
+    # lines later in the old code) — a direct peak-RSS cut with no
+    # behavior change, since the final output was already `set(entries)`.
+    postings: dict[str, set[tuple[str, str, str]]] = {}
+    alias_exact: dict[str, set[tuple[str, str]]] = {}
     node_id_index: dict[str, str] = {}
     doc_freq_global: dict[str, int] = {}
     doc_freq_per_repo: dict[str, dict[str, int]] = {}
@@ -228,33 +247,43 @@ def build_lexical_index(
             all_terms_this_doc: set[str] = set()
             for field_name, terms in field_tokens.items():
                 for term in terms:
-                    postings.setdefault(term, []).append((repo_id, key, field_name))
+                    postings.setdefault(term, set()).add((repo_id, key, field_name))
                     all_terms_this_doc.add(term)
             for term in all_terms_this_doc:
                 doc_freq_global[term] = doc_freq_global.get(term, 0) + 1
                 repo_df[term] = repo_df.get(term, 0) + 1
 
             for alias in extract_alias_forms(label, source_file):
-                alias_exact.setdefault(alias, []).append((repo_id, key))
+                alias_exact.setdefault(alias, set()).add((repo_id, key))
 
             raw_id = node.get("id")
             if raw_id:
                 node_id_index[f"{repo_id}\x1f{str(raw_id).lower()}"] = key
 
-    sorted_postings = {
-        term: [
-            {"repo": r, "key": k, "field": f, "weight": FIELD_BOOSTS[f]}
-            for r, k, f in sorted(set(entries), key=lambda e: (e[0], e[1], e[2]))
+    # Built by POPPING each term's raw entry-set out of `postings` as it is
+    # converted, rather than iterating `postings.items()` (which keeps the
+    # entire raw accumulator dict alive, alongside the new compact-array
+    # dict being built, for the whole comprehension). Popping lets Python
+    # free each term's set as soon as its compact list is built, so the two
+    # full-size structures are never BOTH fully resident at once — this was
+    # the second peak-RSS source alongside the removed `weight` field
+    # (raw `postings` and `sorted_postings` used to coexist in full).
+    # `weight` is no longer stored: it is always `FIELD_BOOSTS[field]`,
+    # already published once under `field_boosts` for readers to look up.
+    sorted_postings: dict[str, list[list[str]]] = {}
+    for term in sorted(postings.keys()):
+        entries = postings.pop(term)
+        sorted_postings[term] = [
+            [r, k, f] for r, k, f in sorted(entries, key=lambda e: (e[0], e[1], e[2]))
         ]
-        for term, entries in sorted(postings.items())
-    }
-    sorted_aliases = {
-        alias: [{"repo": r, "key": k} for r, k in sorted(set(entries))]
-        for alias, entries in sorted(alias_exact.items())
-    }
+
+    sorted_aliases: dict[str, list[list[str]]] = {}
+    for alias in sorted(alias_exact.keys()):
+        alias_entries = alias_exact.pop(alias)
+        sorted_aliases[alias] = [[r, k] for r, k in sorted(alias_entries)]
 
     data = {
-        "schema_version": 1,
+        "schema_version": LEXICAL_SCHEMA_VERSION,
         "tokenizer_version": TOKENIZER_VERSION,
         "field_boosts": FIELD_BOOSTS,
         "postings": sorted_postings,

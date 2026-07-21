@@ -9,11 +9,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
 from graphify_mesh.sync.config import IGNORED_DIR_NAMES, categorize_file
+
+log = logging.getLogger("graphify_mesh.sync")
 
 
 @dataclass
@@ -71,15 +75,44 @@ def compute_source_manifest(root: Path) -> SourceDigest:
 
 
 def load_state(state_path: Path) -> dict:
+    """Load the per-project source-manifest state. A corrupt or unreadable
+    state file (torn write after power loss, manual tampering) must never
+    brick every subsequent sync run — treat it exactly like a missing file:
+    start from empty state. Worst case is one full re-extract cycle, which
+    is self-healing; an unhandled JSONDecodeError here would require manual
+    cleanup before any run could succeed again."""
     if not state_path.exists():
         return {}
-    return json.loads(state_path.read_text(encoding="utf-8"))
+    try:
+        loaded = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        log.warning(
+            "state file %s is unreadable/corrupt (%s) — starting from empty state; "
+            "all projects will be treated as changed this run",
+            state_path,
+            exc,
+        )
+        return {}
+    if not isinstance(loaded, dict):
+        log.warning(
+            "state file %s does not contain a JSON object — starting from empty state",
+            state_path,
+        )
+        return {}
+    return loaded
 
 
 def save_state(state_path: Path, state: dict) -> None:
     state_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = state_path.with_suffix(state_path.suffix + ".tmp")
-    tmp.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+    # fsync the file DATA before the rename: without it, a power loss can
+    # make the rename durable while the contents are not, leaving a
+    # truncated/empty state file behind (the exact corruption load_state
+    # tolerates above — but better to not produce it in the first place).
+    with tmp.open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps(state, indent=2, sort_keys=True))
+        fh.flush()
+        os.fsync(fh.fileno())
     tmp.replace(state_path)
 
 

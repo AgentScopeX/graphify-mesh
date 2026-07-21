@@ -358,6 +358,27 @@ def test_gc_old_generations_noop_when_within_limit(tmp_path):
     assert (generations_dir / "gen-1").exists()
 
 
+def test_gc_old_generations_pins_current_target_despite_sort_order(tmp_path):
+    # Clock skew: the LIVE generation sorts oldest by name. GC must pin the
+    # dir `current` points at, mirroring publish.prune_old_generations.
+    generations_dir = tmp_path / "generations"
+    for name in [
+        "20260101T000000Z-live",
+        "20260102T000000Z-b",
+        "20260103T000000Z-c",
+        "20260104T000000Z-d",
+    ]:
+        (generations_dir / name).mkdir(parents=True)
+    current = tmp_path / "current"
+    current.symlink_to(generations_dir / "20260101T000000Z-live", target_is_directory=True)
+
+    removed = embedding.gc_old_generations(generations_dir, keep=2, current=current)
+
+    assert (generations_dir / "20260101T000000Z-live").exists()
+    assert "20260101T000000Z-live" not in removed
+    assert "20260102T000000Z-b" in removed
+
+
 # ---------------------------------------------------------------------------
 # run_embedding_stage: unchanged-repo short-circuit + degraded fallback
 # ---------------------------------------------------------------------------

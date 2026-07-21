@@ -149,6 +149,22 @@ def test_graphify_extract_process_is_watched_too():
     assert candidates[0].pid == 300
 
 
+def test_every_pipeline_graphify_subcommand_is_watched():
+    # graphify_cli.py invokes update, extract, merge-graphs, cluster-only
+    # and label — a SIGKILLed pipeline can orphan any of them.
+    for subcommand in ("update", "extract", "merge-graphs", "cluster-only", "label"):
+        rows = [
+            ProcRow(
+                pid=400,
+                ppid=1,
+                args=f"/opt/pipx/venvs/graphifyy/bin/python -m graphify {subcommand} /x",
+            )
+        ]
+        candidates = find_orphan_candidates(rows)
+        assert len(candidates) == 1, f"graphify {subcommand} orphan not flagged"
+        assert candidates[0].pid == 400
+
+
 def test_unrelated_processes_never_flagged():
     rows = [
         ProcRow(pid=1, ppid=0, args="/sbin/init"),

@@ -41,10 +41,13 @@ class SimilarResult:
 
 
 def resolve_key(query: str, generation: Generation) -> str | None:
+    """`alias_exact` entries are the schema_version 2 compact `[repo, key]`
+    array shape (see `lexical_index.py`)."""
     norm = normalize_alias_query(query.strip()) if query else ""
     entries = generation.lexical.get("alias_exact", {}).get(norm, [])
-    if entries:
-        return sorted(e["key"] for e in entries if isinstance(e, dict))[0]
+    keys = sorted(e[1] for e in entries if isinstance(e, list) and len(e) == 2)
+    if keys:
+        return keys[0]
     return None
 
 
