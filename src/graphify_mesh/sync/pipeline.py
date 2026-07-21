@@ -507,6 +507,16 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
     publish.write_lexical_index(gen_dir, lexical_result.data)
     publish.flip_current(settings.global_dir, gen_dir)
 
+    # Structural generations (global-graph.json + overlay + lexical-index,
+    # tens to 100+ MB each) had no GC at all before this — runs only AFTER
+    # flip_current succeeds, mirroring embedding.persist_generation's timing
+    # rule, and never removes whatever `current` now points at.
+    pruned = publish.prune_old_generations(
+        settings.generations_dir, settings.current_symlink, settings.keep_structural_generations
+    )
+    if pruned:
+        log.info("publish: pruned %d old/incomplete generation(s): %s", len(pruned), ", ".join(pruned))
+
     # WS3: only now (a successful publish) does the embedding index become
     # durable — mirrors the rest of the pipeline's "nothing persists unless
     # publish happens" rule. Nothing to persist if the embed stage was

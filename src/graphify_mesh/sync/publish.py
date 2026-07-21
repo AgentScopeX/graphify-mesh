@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import time
 from pathlib import Path
 
@@ -120,6 +121,55 @@ def flip_current(global_dir: Path, gen_dir: Path) -> None:
     tmp_link.symlink_to(gen_dir.resolve(), target_is_directory=True)
     os.rename(str(tmp_link), str(current))
     _fsync_dir(global_dir)
+
+
+def prune_old_generations(generations_dir: Path, current: Path, keep: int = 2) -> list[str]:
+    """Delete all generation dirs under `generations_dir` except the one
+    `current` points at and the `keep - 1` most recent others (by directory
+    name, which sorts chronologically — `make_generation_id` is a
+    zero-padded UTC timestamp prefix).
+
+    Each generation is a full copy of the merged graph + overlay + lexical
+    index (global-graph.json alone can be tens of MB, lexical-index.json can
+    exceed 100MB) — with no GC, a generation this large published on every
+    scheduled run (e.g. hourly) accumulates without bound. `write_generation`
+    never deletes anything itself (by design, so a crash mid-write never
+    corrupts a previous good generation) — pruning only ever runs here,
+    AFTER `flip_current` has already succeeded, so a crash during pruning
+    can strand extra generation dirs (wasted disk) but can never remove the
+    one `current` needs.
+
+    Also removes generation dirs that never finished publishing (e.g. a
+    dangling `<name>/lexical-index.json.tmp` with no matching `.json` —
+    the process was killed between `write_lexical_index`'s tmp-write and its
+    rename) — these were never `current` and are safe to delete outright,
+    keep-count aside.
+    """
+    if not generations_dir.is_dir():
+        return []
+    current_name = os.path.basename(os.path.realpath(current)) if current.exists() else None
+    all_names = sorted(p.name for p in generations_dir.iterdir() if p.is_dir())
+
+    def _is_incomplete(name: str) -> bool:
+        gen_dir = generations_dir / name
+        return any(gen_dir.glob("*.tmp"))
+
+    incomplete = [n for n in all_names if n != current_name and _is_incomplete(n)]
+    complete = [n for n in all_names if n not in incomplete]
+    # Keep the most recent `keep` complete generations (current is always
+    # among the most recent, but pin it explicitly in case clock skew ever
+    # makes it sort out of the tail).
+    keep_set = set(complete[-keep:]) if keep > 0 else set()
+    if current_name is not None:
+        keep_set.add(current_name)
+    to_remove = incomplete + [n for n in complete if n not in keep_set]
+
+    removed = []
+    for name in to_remove:
+        target = generations_dir / name
+        shutil.rmtree(target, ignore_errors=True)
+        removed.append(name)
+    return removed
 
 
 def output_hash(graph_data: dict) -> str:
