@@ -5,12 +5,14 @@ on:
     tags:
       - "v*.*.*"
 
-permissions:
-  contents: write
+# Default deny; each job below requests only what it needs.
+permissions: {}
 
 jobs:
-  release:
+  test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -28,10 +30,42 @@ jobs:
       - name: Run the full test suite (release aborts if this fails)
         run: python -m pytest tests/ -q
 
+  build:
+    needs: [test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
       - name: Build sdist + wheel
         run: |
           python -m pip install --upgrade build
           python -m build
+
+      - name: Upload dist artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  github-release:
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download dist artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist
 
       - name: Create GitHub Release with artifacts
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
@@ -40,7 +74,26 @@ jobs:
             dist/*.tar.gz
             dist/*.whl
 
-      # ---- PEP 503 "simple" index on the gh-pages branch ----------------
+  # ---- PEP 503 "simple" index on the gh-pages branch --------------------
+  publish-index:
+    needs: [github-release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Download dist artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist
+
       - name: Check whether gh-pages already exists
         # actions/checkout retries+fails noisily (and can abort the job) when
         # asked to fetch a ref that doesn't exist yet, which is exactly the

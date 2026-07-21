@@ -33,6 +33,9 @@ from pathlib import Path
 
 from graphify_mesh.server.config import ServerConfig
 from graphify_mesh.sync.embedding import node_key
+from graphify_mesh.sync.lexical_index import (
+    LEXICAL_SCHEMA_VERSION as EXPECTED_LEXICAL_SCHEMA_VERSION,
+)
 from graphify_mesh.sync.lexical_index import TOKENIZER_VERSION as EXPECTED_TOKENIZER_VERSION
 from graphify_mesh.sync.publish import output_hash
 from graphify_mesh.sync.validate import validate_generation_manifest
@@ -124,6 +127,27 @@ def validate_manifest_consistency(manifest: dict, graph: dict, lexical: dict) ->
         errors.append(
             f"lexical-index: tokenizer_version={lexical_tok!r} is not a version this server "
             f"understands (expected {EXPECTED_TOKENIZER_VERSION!r}) — "
+            "refusing to serve stale-shaped index"
+        )
+
+    # C28: schema_version gate — independent of tokenizer_version above.
+    # This covers the on-disk CONTAINER shape (postings/alias_exact entry
+    # representation), not term-splitting rules; a schema_version mismatch
+    # means this server would misindex into entries assuming the wrong
+    # shape (e.g. dict-style `["weight"]` access against a v2 compact
+    # array), so it is rejected exactly like a tokenizer mismatch.
+    manifest_schema = manifest.get("lexical_index_schema_version")
+    lexical_schema = lexical.get("schema_version") if isinstance(lexical, dict) else None
+    schema_mismatch = manifest_schema is not None and lexical_schema is not None
+    if schema_mismatch and manifest_schema != lexical_schema:
+        errors.append(
+            f"lexical-index: manifest schema_version={manifest_schema!r} != "
+            f"lexical-index.json schema_version={lexical_schema!r}"
+        )
+    if lexical_schema is not None and lexical_schema != EXPECTED_LEXICAL_SCHEMA_VERSION:
+        errors.append(
+            f"lexical-index: schema_version={lexical_schema!r} is not a version this server "
+            f"understands (expected {EXPECTED_LEXICAL_SCHEMA_VERSION!r}) — "
             "refusing to serve stale-shaped index"
         )
     return errors

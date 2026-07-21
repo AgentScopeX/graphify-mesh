@@ -45,7 +45,13 @@ def _write_json_atomic(path: Path, data: dict, **dumps_kwargs) -> None:
     dir with half a graph in it is a trap for the manual-rollback procedure
     (ROLLBACK.md points operators at old generation dirs directly)."""
     tmp_path = path.with_name(path.name + ".tmp")
-    tmp_path.write_text(json.dumps(data, **dumps_kwargs), encoding="utf-8")
+    # fsync file DATA before rename: rename alone can become durable while
+    # the contents are not (power loss), leaving an empty/garbage .json
+    # behind an already-flipped `current`.
+    with tmp_path.open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps(data, **dumps_kwargs))
+        fh.flush()
+        os.fsync(fh.fileno())
     os.rename(str(tmp_path), str(path))
 
 

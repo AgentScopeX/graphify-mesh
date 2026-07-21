@@ -70,6 +70,38 @@ log = logging.getLogger("graphify_mesh.sync")
 
 STALE_STATUSES = frozenset({STATUS_FAILED, STATUS_BOOTSTRAP_FAILED, STATUS_SHRINK_REFUSED})
 
+STAGING_PREFIX = "graphify-mesh-sync-staging-"
+# A SIGKILLed/OOM-killed run never reaches the `finally` that removes its
+# staging dir, so stale siblings accumulate in the temp dir forever. Swept
+# at startup (under the transaction lock) once they're old enough that no
+# live run can plausibly still own them — a full sync is minutes, so 6h is
+# very conservative (and also clears concurrently-running dry-runs' dirs
+# only long after those dry-runs are dead).
+STALE_STAGING_MAX_AGE_SECONDS = 6 * 3600.0
+
+
+def _sweep_stale_staging(
+    own_staging: Path, max_age_seconds: float = STALE_STAGING_MAX_AGE_SECONDS
+) -> list[str]:
+    """Remove leftover staging dirs from previous killed runs. Only dirs
+    matching our own mkdtemp prefix, never our own live dir, and only past
+    the age threshold. Called while holding the transaction lock, so no
+    other non-dry-run sync can be mid-run."""
+    removed: list[str] = []
+    now = time.time()
+    for candidate in own_staging.parent.glob(STAGING_PREFIX + "*"):
+        if candidate == own_staging or not candidate.is_dir():
+            continue
+        try:
+            age = now - candidate.stat().st_mtime
+        except OSError:
+            continue
+        if age < max_age_seconds:
+            continue
+        shutil.rmtree(candidate, ignore_errors=True)
+        removed.append(candidate.name)
+    return removed
+
 
 def config_hash() -> str:
     payload = {
@@ -137,6 +169,14 @@ def run(settings: Settings) -> RunReport:
 
     try:
         with transaction_lock(lock_path):
+            if not settings.dry_run:
+                swept = _sweep_stale_staging(staging_root)
+                if swept:
+                    log.info(
+                        "startup: swept %d stale staging dir(s) from killed runs: %s",
+                        len(swept),
+                        ", ".join(swept),
+                    )
             return _run_locked(settings, staging_root)
     finally:
         # Staging is per-run scratch (mkdtemp above). Without this, every run
@@ -492,6 +532,7 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
         # self-describing about what the companion server will load — same
         # "record what produced the artifact" pattern as embedding_recipe.
         "lexical_index_tokenizer_version": lexical_index.TOKENIZER_VERSION,
+        "lexical_index_schema_version": lexical_index.LEXICAL_SCHEMA_VERSION,
         "lexical_index_stats": report.lexical_index_stats,
     }
     gen_dir = publish.write_generation(
@@ -515,7 +556,9 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
         settings.generations_dir, settings.current_symlink, settings.keep_structural_generations
     )
     if pruned:
-        log.info("publish: pruned %d old/incomplete generation(s): %s", len(pruned), ", ".join(pruned))
+        log.info(
+            "publish: pruned %d old/incomplete generation(s): %s", len(pruned), ", ".join(pruned)
+        )
 
     # WS3: only now (a successful publish) does the embedding index become
     # durable — mirrors the rest of the pipeline's "nothing persists unless

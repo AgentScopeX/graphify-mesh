@@ -209,9 +209,10 @@ def test_lexical_entry_missing_key_is_tolerated():
             make_node("acme.repo", "OrderRepository", "src/order_repo.py", node_id="n2"),
         ]
     )
-    # Corrupt every posting list with an entry that has no "key".
+    # Corrupt every posting list with a malformed (wrong-length) entry —
+    # schema_version 2 entries are `[repo, key, field]` compact arrays.
     for entries in generation.lexical.get("postings", {}).values():
-        entries.append({"repo": "acme.repo", "weight": 1.0})
+        entries.append(["acme.repo"])
 
     ranked = lexical_candidates("OrderService", generation.lexical, None)
     assert ranked  # real entries still rank; malformed one is skipped
@@ -221,7 +222,7 @@ def test_search_tool_survives_malformed_lexical_entry(tmp_path, monkeypatch):
     server = _search_server(tmp_path, monkeypatch)
     generation = server._generation()
     for entries in generation.lexical.get("postings", {}).values():
-        entries.append({"repo": "acme.repo"})  # no "key"
+        entries.append(["acme.repo"])  # malformed: wrong length, no key
 
     response = server.handle_message(
         _rpc("tools/call", {"name": "search", "arguments": {"q": "OrderService"}})

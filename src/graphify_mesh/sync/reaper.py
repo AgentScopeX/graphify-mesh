@@ -59,7 +59,9 @@ from dataclasses import dataclass
 # started it is gone, but the child never noticed.
 WATCHED_PATTERNS = (
     re.compile(r"graphify\.serve"),
-    re.compile(r"\bgraphify\b.*\bextract\b"),
+    # Every graphify subcommand the sync pipeline invokes (graphify_cli.py):
+    # a SIGKILLed pipeline leaves ANY of them orphaned, not just extract.
+    re.compile(r"\bgraphify\b.*\b(extract|update|merge-graphs|cluster-only|label)\b"),
 )
 
 # A parent whose full command line matches one of these is a legitimate,
