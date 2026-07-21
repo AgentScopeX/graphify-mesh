@@ -117,6 +117,14 @@ EMBED_DEFAULT_HEALTH_TIMEOUT = 3.0
 # disk; GC prunes older ones at publish time (see embedding.persist_generation).
 KEEP_EMBEDDING_GENERATIONS = 2
 
+# Structural generation dirs (global-graph.json + overlay + lexical-index,
+# tens to 100+ MB each) had NO GC at all until this constant was added — a
+# scheduled sync (e.g. hourly) accumulated one full generation per run
+# forever. Keep the same count as embeddings for consistency; see
+# publish.prune_old_generations, called from pipeline.py right after
+# flip_current succeeds.
+KEEP_STRUCTURAL_GENERATIONS = 2
+
 # Overlay-only relation types (WS4). These must NEVER appear in the
 # structural (per-repo or merged global) graph output (C5, WS1 item 7).
 FORBIDDEN_OVERLAY_RELATION_TYPES = frozenset(
@@ -259,6 +267,7 @@ class Settings:
     # for the embedding stage's own (native-endpoint) health check.
     ollama_embed_health_check: Callable[[str, float], bool] | None = None
     keep_embedding_generations: int = KEEP_EMBEDDING_GENERATIONS
+    keep_structural_generations: int = KEEP_STRUCTURAL_GENERATIONS
 
     @property
     def global_dir(self) -> Path:
