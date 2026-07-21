@@ -64,6 +64,7 @@ import logging
 import os
 import re
 import shutil
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
@@ -75,6 +76,7 @@ import numpy as np
 from graphify_mesh.sync.config import Settings, is_valid_http_base_url
 from graphify_mesh.sync.overlay_refs import LogicalRef
 from graphify_mesh.sync.publish import _fsync_dir
+from graphify_mesh.sync.source_cache import get_source_lines
 from graphify_mesh.sync.vectors import RepoVectors
 
 log = logging.getLogger("graphify_mesh.sync.embedding")
@@ -113,6 +115,13 @@ TRIVIAL_MAX_SNIPPET_LINES = 2
 
 EMBED_BATCH_SIZE = 16
 EMBED_REQUEST_TIMEOUT = 30.0
+# One bounded retry per failed batch: a single transient Ollama blip used to
+# degrade the current repo AND every repo after it to their previous shards
+# (see run_embedding_stage's EMBED_PARTIAL fallback), discarding vectors the
+# run had already computed. A short backoff + one retry absorbs the common
+# one-off blip; a second consecutive failure still declares EMBED_PARTIAL.
+EMBED_BATCH_RETRIES = 1
+EMBED_RETRY_BACKOFF_SECONDS = 2.0
 
 # Shard format v2: `<repo>.meta.json` (entries + dim + format marker) +
 # `<repo>.npy` (float32 matrix, row i belongs to the key whose entry says
@@ -253,25 +262,20 @@ def build_snippet(source_root: Path | None, source_file: str | None, line: int |
     if not path.is_file():
         return ""
 
+    # Shared per-run line cache (source_cache.py): the embed stage and the
+    # lexical-index stage both call build_snippet once per node, so the same
+    # file used to be opened and line-scanned ~2x-per-node; now it is read
+    # once (capped at SNIPPET_READ_LINE_CAP lines, same cap the old streaming
+    # scan enforced) and every window slices out of the cached tuple.
+    lines = get_source_lines(path, SNIPPET_READ_LINE_CAP)
+    if lines is None:
+        return ""
+
     half = SNIPPET_WINDOW_LINES // 2
     start = max(0, (line - 1 - half)) if line else 0
     end = start + SNIPPET_WINDOW_LINES
 
-    lines: list[str] = []
-    try:
-        with path.open("r", encoding="utf-8", errors="replace") as fh:
-            for idx, raw_line in enumerate(fh):
-                if idx >= SNIPPET_READ_LINE_CAP:
-                    break
-                if idx < start:
-                    continue
-                if idx >= end:
-                    break
-                lines.append(raw_line.rstrip("\n"))
-    except OSError:
-        return ""
-
-    snippet = "\n".join(lines)
+    snippet = "\n".join(lines[start:end])
     return snippet[:SNIPPET_MAX_CHARS]
 
 
@@ -357,6 +361,29 @@ def embed_batch(
     return vectors
 
 
+def _embed_batch_with_retry(base_url: str, model: str, inputs: list[str]) -> list[list[float]]:
+    """`embed_batch` with EMBED_BATCH_RETRIES bounded retries (short fixed
+    backoff) before letting the failure propagate. Looked up via the module
+    global so tests monkeypatching `embedding.embed_batch` keep working."""
+    attempts = EMBED_BATCH_RETRIES + 1
+    for attempt in range(1, attempts + 1):
+        try:
+            return embed_batch(base_url, model, inputs)
+        except RuntimeError as exc:
+            if attempt >= attempts:
+                raise
+            log.warning(
+                "embed_batch attempt %d/%d failed (%s) — retrying after %.1fs backoff",
+                attempt,
+                attempts,
+                exc,
+                EMBED_RETRY_BACKOFF_SECONDS,
+            )
+            time.sleep(EMBED_RETRY_BACKOFF_SECONDS)
+    # Unreachable: the loop either returns or re-raises on its last attempt.
+    raise RuntimeError("embed_batch retry loop exited without a result")
+
+
 def _iter_embeddable_nodes(repo_id: str, graph_data: dict, source_root: Path | None):
     """Yields (key, label, source_file, community_name, snippet, is_trivial)
     for every node in this repo's raw graph that has enough fields to build
@@ -433,7 +460,7 @@ def compute_repo_shard(
         batch_num = batch_start // EMBED_BATCH_SIZE + 1
         batch_keys = to_embed_keys[batch_start : batch_start + EMBED_BATCH_SIZE]
         batch_inputs = to_embed_inputs[batch_start : batch_start + EMBED_BATCH_SIZE]
-        vectors = embed_batch(base_url, model, batch_inputs)
+        vectors = _embed_batch_with_retry(base_url, model, batch_inputs)
         for key, vector in zip(batch_keys, vectors, strict=True):
             vector_sources[key] = vector
             stats.embedded += 1
@@ -612,9 +639,7 @@ def _validate_v2_shard(meta: dict, matrix: np.ndarray) -> str | None:
         if row < 0 or row >= n_rows:
             return f"entry {key!r} has out-of-range row {row!r} (n_rows={n_rows})"
         if row in seen_rows:
-            return (
-                f"duplicate row {row} claimed by both {seen_rows[row]!r} and {key!r}"
-            )
+            return f"duplicate row {row} claimed by both {seen_rows[row]!r} and {key!r}"
         seen_rows[row] = key
 
     return None
@@ -721,8 +746,8 @@ def read_previous_id_map(embeddings_current_dir: Path | None) -> dict[str, dict]
 
 
 def run_embedding_stage(
-    graph_paths_by_repo,
-    repo_roots_by_id,
+    graph_paths_by_repo: dict[str, Path],
+    repo_roots_by_id: dict[str, Path],
     graphs_by_repo: dict[str, dict],
     unchanged_repo_ids: set[str],
     settings: Settings,
@@ -770,15 +795,15 @@ def run_embedding_stage(
         # Degraded: carry forward whatever was last published, verbatim, so a
         # transient outage doesn't erase the whole index; nodes added since
         # then simply have no vector until a healthy run recomputes them.
-        vectors_by_repo: dict[str, RepoVectors] = {}
+        carried_forward_vectors: dict[str, RepoVectors] = {}
         shards_by_repo: dict[str, RepoShard] = {}
         for repo_id in graphs_by_repo:
             prev_shard = read_previous_shard(previous_current_dir, repo_id)
             shards_by_repo[repo_id] = prev_shard
-            vectors_by_repo[repo_id] = prev_shard.vectors
+            carried_forward_vectors[repo_id] = prev_shard.vectors
         return EmbeddingStageResult(
             status=EMBED_DEGRADED,
-            vectors_by_repo=vectors_by_repo,
+            vectors_by_repo=carried_forward_vectors,
             shards_by_repo=shards_by_repo,
             reason=degrade_reason,
             id_map=previous_id_map,
@@ -789,6 +814,11 @@ def run_embedding_stage(
     all_keys: set[str] = set()
     staged_shards: dict[str, RepoShard] = {}
     mid_run_failure: str | None = None
+
+    def _stage_shard(staged_repo_id: str, staged_shard: RepoShard) -> None:
+        staged_shards[staged_repo_id] = staged_shard
+        all_keys.update(staged_shard.entries.keys())
+        vectors_by_repo[staged_repo_id] = staged_shard.vectors
 
     total_repos = len(graphs_by_repo)
     repo_items = list(graphs_by_repo.items())
@@ -802,49 +832,56 @@ def run_embedding_stage(
             # whole previous shard rather than re-reading/re-hashing every
             # node in it.
             log.info("[%d/%d] %s: reusing previous shard (unchanged) ...", i, total_repos, repo_id)
-            shard = previous_shard
             stats.reused_repos_unchanged += 1
-        else:
-            log.info("[%d/%d] %s: computing shard ...", i, total_repos, repo_id)
-            try:
-                shard = compute_repo_shard(
-                    repo_id,
-                    graph_data,
-                    source_root,
-                    previous_shard,
-                    settings.ollama_embed_base_url,
-                    settings.ollama_embed_model,
-                    stats,
-                )
-            except RuntimeError as exc:
-                # A real embed_batch call failed AFTER the pre-flight health
-                # check passed — a mid-run network blip, the host going down
-                # partway through, etc. This must NOT crash the whole
-                # pipeline and lose already-completed repos' real vectors
-                # (or the naming stage's result, which already ran and
-                # succeeded by this point) — fall back to this repo's
-                # previous shard and every repo after it, keep what's
-                # already staged, and report the run as PARTIAL rather than
-                # letting the exception propagate out of the pipeline.
-                log.warning(
-                    "%s: embed_batch failed mid-run (%s) — falling back to previous shard for "
-                    "this repo and all %d remaining repo(s); "
-                    "already-embedded repos this run are kept",
-                    repo_id,
-                    exc,
-                    total_repos - i,
-                )
-                mid_run_failure = f"{repo_id}: {exc}"
-                for fallback_repo_id, _ in repo_items[i - 1 :]:
-                    fallback_shard = read_previous_shard(previous_current_dir, fallback_repo_id)
-                    staged_shards[fallback_repo_id] = fallback_shard
-                    all_keys.update(fallback_shard.entries.keys())
-                    vectors_by_repo[fallback_repo_id] = fallback_shard.vectors
-                break
+            _stage_shard(repo_id, previous_shard)
+            continue
 
-        staged_shards[repo_id] = shard
-        all_keys.update(shard.entries.keys())
-        vectors_by_repo[repo_id] = shard.vectors
+        log.info("[%d/%d] %s: computing shard ...", i, total_repos, repo_id)
+        try:
+            shard = compute_repo_shard(
+                repo_id,
+                graph_data,
+                source_root,
+                previous_shard,
+                settings.ollama_embed_base_url,
+                settings.ollama_embed_model,
+                stats,
+            )
+        except RuntimeError as exc:
+            # A real embed_batch call failed AFTER the pre-flight health
+            # check passed (and survived _embed_batch_with_retry's bounded
+            # retry) — a mid-run network blip, the host going down partway
+            # through, etc. This must NOT crash the whole pipeline and lose
+            # already-completed repos' real vectors (or the naming stage's
+            # result, which already ran and succeeded by this point) — fall
+            # back to this repo's previous shard and every repo after it,
+            # keep what's already staged, and report the run as PARTIAL
+            # rather than letting the exception propagate out of the
+            # pipeline.
+            log.warning(
+                "%s: embed_batch failed mid-run (%s) — falling back to previous shard for "
+                "this repo and all %d remaining repo(s); "
+                "already-embedded repos this run are kept",
+                repo_id,
+                exc,
+                total_repos - i,
+            )
+            mid_run_failure = f"{repo_id}: {exc}"
+            # The failing repo's previous shard is already in hand — reuse
+            # the loaded object instead of re-reading it from disk.
+            _stage_shard(repo_id, previous_shard)
+            for fallback_repo_id, _ in repo_items[i:]:
+                _stage_shard(
+                    fallback_repo_id, read_previous_shard(previous_current_dir, fallback_repo_id)
+                )
+            break
+
+        # Drop the previous shard's reference BEFORE staging the new one so
+        # the previous and new shard never coexist longer than needed
+        # (peak-RSS: compute_repo_shard has already taken everything it
+        # reuses out of it by now).
+        del previous_shard
+        _stage_shard(repo_id, shard)
 
     id_map = build_id_map(previous_id_map, all_keys, provisional_generation_id)
     stats.tombstoned = sum(1 for v in id_map.values() if v.get("status") == "tombstoned")
@@ -883,21 +920,22 @@ def stage_embeddings(
     for repo_id, shard in staged_shards_source.items():
         meta_path = out_dir / _shard_meta_filename(repo_id)
         matrix_path = out_dir / _shard_matrix_filename(repo_id)
-        meta_path.write_text(
-            json.dumps(
+        # json.dump streams straight to the file handle — json.dumps built
+        # the whole serialized shard meta as one in-RAM string first, which
+        # at large node counts briefly doubled this stage's footprint.
+        with meta_path.open("w", encoding="utf-8") as meta_fh:
+            json.dump(
                 {
                     "repo_id": repo_id,
                     "shard_format": SHARD_FORMAT_VERSION,
                     "dim": shard.vectors.dim,
                     "entries": shard.entries,
-                }
-            ),
-            encoding="utf-8",
-        )
+                },
+                meta_fh,
+            )
         np.save(matrix_path, shard.vectors.matrix)
-    (out_dir / "id-map.json").write_text(
-        json.dumps(id_map, indent=2, sort_keys=True), encoding="utf-8"
-    )
+    with (out_dir / "id-map.json").open("w", encoding="utf-8") as id_map_fh:
+        json.dump(id_map, id_map_fh, indent=2, sort_keys=True)
     return out_dir
 
 

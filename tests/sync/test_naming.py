@@ -11,7 +11,7 @@ from graphify_mesh.sync import backend, graphify_cli, naming, publish
 from graphify_mesh.sync.config import Settings
 from graphify_mesh.sync.pipeline import run
 
-FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
+FIXTURES_DIR = Path(__file__).resolve().parents[1] / "fixtures"
 FAKE_GRAPHIFY = FIXTURES_DIR / "fake_graphify" / "graphify"
 
 
@@ -397,9 +397,7 @@ def test_stale_sidecar_removed_before_crash_can_leave_it_behind(tmp_path, monkey
         )
 
     # graph.json really was (partially) relabeled by the real subprocess...
-    written = json.loads(
-        (naming_dir / "graphify-out" / "graph.json").read_text(encoding="utf-8")
-    )
+    written = json.loads((naming_dir / "graphify-out" / "graph.json").read_text(encoding="utf-8"))
     assert any(n.get("community_name") for n in written["nodes"])
     # ...but the stale sidecar from the earlier good run must be gone, even
     # though the crash happened before the OK-path sidecar write ever ran.
@@ -423,9 +421,7 @@ def test_stale_sidecar_removed_before_crash_can_leave_it_behind(tmp_path, monkey
         health_check=lambda *a, **kw: True,
     )
     assert second.labeling == naming.LABELING_OK
-    entries_after = [
-        json.loads(line) for line in call_log.read_text(encoding="utf-8").splitlines()
-    ]
+    entries_after = [json.loads(line) for line in call_log.read_text(encoding="utf-8").splitlines()]
     new_entries = entries_after[len(entries_before) :]
     assert any(e["cmd"] == "cluster-only" for e in new_entries)  # a real full run, not reuse
 
@@ -508,9 +504,7 @@ def test_run_naming_full_run_on_changed_fingerprint(tmp_path, monkeypatch):
     )
 
     assert second.labeling == naming.LABELING_OK
-    entries_after = [
-        json.loads(line) for line in call_log.read_text(encoding="utf-8").splitlines()
-    ]
+    entries_after = [json.loads(line) for line in call_log.read_text(encoding="utf-8").splitlines()]
     new_entries = entries_after[len(entries_before) :]
     assert any(e["cmd"] == "cluster-only" for e in new_entries)
 

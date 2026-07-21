@@ -12,6 +12,27 @@ from graphify_mesh.sync.config import FORBIDDEN_OVERLAY_RELATION_TYPES
 
 PLACEHOLDER_PREFIX = "Community "
 
+# Per-check cap on collected error strings: a badly broken merge can yield
+# millions of dangling/forbidden edges, and status.json must not balloon.
+# The ok/fail decision always uses the true count, never the capped list.
+MAX_ERRORS_PER_CHECK = 50
+
+
+def _record_error(errors: list[str], total: int, message: str) -> int:
+    """Count an error, appending its message only while under the cap.
+    Returns the updated true total."""
+    total += 1
+    if total <= MAX_ERRORS_PER_CHECK:
+        errors.append(message)
+    return total
+
+
+def _capped_result(errors: list[str], total: int) -> ValidationResult:
+    overflow = total - MAX_ERRORS_PER_CHECK
+    if overflow > 0:
+        errors.append(f"... +{overflow} more error(s) omitted (total {total})")
+    return ValidationResult(ok=total == 0, errors=errors)
+
 
 @dataclass
 class ValidationResult:
@@ -60,16 +81,21 @@ def validate_shrink_guard(
 def validate_dangling_ids(data: dict) -> ValidationResult:
     """C20: every edge endpoint must resolve to a node that exists in the merged graph."""
     node_ids = {n["id"] for n in data.get("nodes", []) if isinstance(n, dict) and "id" in n}
-    errors = []
+    errors: list[str] = []
+    total = 0
     for link in data.get("links", data.get("edges", [])):
         if not isinstance(link, dict):
             continue
         src, dst = link.get("source"), link.get("target")
         if src not in node_ids:
-            errors.append(f"dangling-id: edge source {src!r} not in merged node set")
+            total = _record_error(
+                errors, total, f"dangling-id: edge source {src!r} not in merged node set"
+            )
         if dst not in node_ids:
-            errors.append(f"dangling-id: edge target {dst!r} not in merged node set")
-    return ValidationResult(ok=not errors, errors=errors)
+            total = _record_error(
+                errors, total, f"dangling-id: edge target {dst!r} not in merged node set"
+            )
+    return _capped_result(errors, total)
 
 
 def _repo_prefix(node_id: object) -> str | None:
@@ -98,13 +124,16 @@ def validate_forbidden_edges(data: dict) -> ValidationResult:
     can only originate from the overlay's external-node handling, never from
     a same-repo per-project graph).
     """
-    errors = []
+    errors: list[str] = []
+    total = 0
     for link in data.get("links", data.get("edges", [])):
         if not isinstance(link, dict):
             continue
         if link.get("cross_repo") is True:
-            errors.append(
-                f"forbidden-edge: cross_repo:true edge {link.get('source')}->{link.get('target')}"
+            total = _record_error(
+                errors,
+                total,
+                f"forbidden-edge: cross_repo:true edge {link.get('source')}->{link.get('target')}",
             )
             continue
         rel = link.get("relation") or link.get("type")
@@ -114,11 +143,13 @@ def validate_forbidden_edges(data: dict) -> ValidationResult:
         dst_repo = _repo_prefix(link.get("target"))
         if src_repo is not None and src_repo == dst_repo:
             continue  # same-repo edge, legitimate upstream-extracted data
-        errors.append(
+        total = _record_error(
+            errors,
+            total,
             f"forbidden-edge: cross-repo overlay relation {rel!r} "
-            f"on {link.get('source')}->{link.get('target')}"
+            f"on {link.get('source')}->{link.get('target')}",
         )
-    return ValidationResult(ok=not errors, errors=errors)
+    return _capped_result(errors, total)
 
 
 def validate_community_names(data: dict, skip_labeling: bool) -> ValidationResult:
@@ -188,11 +219,9 @@ def run_all(
     ]
     all_errors: list[str] = []
     hard_fail = False
+    # No skip_labeling special case needed here: validate_community_names
+    # already returns ok=True (with an informational message) in skip mode.
     for check in checks:
-        if check is checks[4] and skip_labeling:
-            # Community-name check errors are informational-only in skip mode.
-            all_errors.extend(check.errors)
-            continue
         if not check.ok:
             hard_fail = True
         all_errors.extend(check.errors)

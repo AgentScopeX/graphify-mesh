@@ -132,31 +132,64 @@ def mmr_select(
 ) -> list[str]:
     """Greedy MMR selection over an already-scored candidate pool.
     Deterministic: ties broken by the candidate's own key (sorted lexical-
-    ref string) at every selection step."""
-    pool = sorted(scored_candidates, key=lambda c: (-c[1], c[0]))
+    ref string) at every selection step.
+
+    Incremental implementation: each remaining candidate carries a running
+    `max_sim` against the already-selected set, updated only against the
+    item selected in the previous step (max over a growing set == running
+    max), so each selection step is one O(n) pass instead of a full re-sort
+    that recomputes similarity against ALL selected items. Selection output
+    is identical to the previous sort-based implementation: the first pick
+    uses the pure-relevance `(-score, key)` order, every later pick
+    maximizes `mmr_value` with ties broken by ascending key — exactly the
+    ordering `sorted(pool, key=lambda c: (-mmr_value(c), c[0]))[0]`
+    produced."""
+    if k <= 0:
+        return []
+    if not scored_candidates:
+        return []
+
+    # Mutable pool entries: [key, score, running max_sim vs selected].
+    pool: list[list] = [[key, score, 0.0] for key, score in scored_candidates]
     selected: list[str] = []
+
+    def _pop(index: int) -> list:
+        # O(1) removal: swap with the last entry. Pool order is irrelevant —
+        # every pick below scans the whole pool with an explicit
+        # deterministic tie-break, never relies on pool order.
+        entry = pool[index]
+        pool[index] = pool[-1]
+        pool.pop()
+        return entry
+
+    def _pick_first() -> None:
+        best_index = 0
+        best_rank = (-pool[0][1], pool[0][0])
+        for index in range(1, len(pool)):
+            rank = (-pool[index][1], pool[index][0])
+            if rank < best_rank:
+                best_rank = rank
+                best_index = index
+        selected.append(_pop(best_index)[0])
+
+    def _pick_next() -> None:
+        last_selected = selected[-1]
+        best_index = 0
+        best_rank: tuple[float, str] | None = None
+        for index, entry in enumerate(pool):
+            sim = _structural_similarity_proxy(entry[0], last_selected, path_by_key)
+            if sim > entry[2]:
+                entry[2] = sim
+            value = lam * entry[1] - (1 - lam) * entry[2]
+            rank = (-value, entry[0])
+            if best_rank is None or rank < best_rank:
+                best_rank = rank
+                best_index = index
+        selected.append(_pop(best_index)[0])
+
+    _pick_first()
     while pool and len(selected) < k:
-        if not selected:
-            chosen = pool[0]
-        else:
-
-            def mmr_value(candidate: tuple[str, float]) -> float:
-                key, score = candidate
-                max_sim = max(
-                    (_structural_similarity_proxy(key, s, path_by_key) for s in selected),
-                    default=0.0,
-                )
-                return lam * score - (1 - lam) * max_sim
-
-            # Explicit deterministic tie-break: highest mmr_value wins;
-            # ties broken by ascending key string, never by pool iteration
-            # order (`sorted` + first-element selection is stable and
-            # order-independent, unlike relying on `max()`'s left-to-right
-            # tie behavior over an unsorted pool).
-            ranked_pool = sorted(pool, key=lambda c: (-mmr_value(c), c[0]))
-            chosen = ranked_pool[0]
-        selected.append(chosen[0])
-        pool.remove(chosen)
+        _pick_next()
     return selected
 
 

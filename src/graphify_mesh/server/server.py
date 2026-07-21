@@ -87,6 +87,37 @@ def _validate_token_budget(arguments: dict) -> int:
     return budget
 
 
+def _validate_str(arguments: dict, key: str, default: str = "") -> str:
+    """Client-supplied string argument: absent -> default; present but not a
+    string -> ToolError (never an AttributeError deep inside a retriever)."""
+    value = arguments.get(key, default)
+    if not isinstance(value, str):
+        raise ToolError(f"'{key}' must be a string")
+    return value
+
+
+def _validate_scope(arguments: dict) -> str | None:
+    """`scope` is optional; when present it must be a string — the actual
+    current|all|repo:<id> grammar is enforced by `scope.resolve_scope`."""
+    scope = arguments.get("scope")
+    if scope is not None and not isinstance(scope, str):
+        raise ToolError("'scope' must be a string ('current', 'all', or 'repo:<id>')")
+    return scope
+
+
+def _validate_repos(arguments: dict) -> list[str] | None:
+    """`repos` is optional; when present it must be a list of strings — the
+    repo_ids themselves are validated against the registry downstream."""
+    repos = arguments.get("repos")
+    if repos is None:
+        return None
+    if not isinstance(repos, list):
+        raise ToolError("'repos' must be a list of strings (registered repo_ids)")
+    if any(not isinstance(repo, str) for repo in repos):
+        raise ToolError("'repos' must be a list of strings (registered repo_ids)")
+    return repos
+
+
 def _citation(repo: str, source_file: str, node: dict) -> str:
     line = node.get("line")
     return f"[{repo}:{source_file}:{line if line is not None else '?'}]"
@@ -127,11 +158,12 @@ class GraphifyMeshServer:
     # --- tool implementations ------------------------------------------
 
     def tool_search(self, arguments: dict) -> dict:
-        query = arguments.get("q", "")
+        query = _validate_str(arguments, "q")
         k = _validate_k(arguments)
+        scope = _validate_scope(arguments)
         entries = self._registry_entries()
         try:
-            decision = resolve_scope(arguments.get("scope"), self.cwd, entries)
+            decision = resolve_scope(scope, self.cwd, entries)
         except ScopeResolutionError as exc:
             raise ToolError(str(exc)) from exc
         generation = self._generation()
@@ -143,11 +175,12 @@ class GraphifyMeshServer:
         }
 
     def tool_cross_project(self, arguments: dict) -> dict:
-        query = arguments.get("q", "")
+        query = _validate_str(arguments, "q")
         k = _validate_k(arguments)
+        repos = _validate_repos(arguments)
         entries = self._registry_entries()
         try:
-            repo_filter = resolve_repo_list(arguments.get("repos"), entries)
+            repo_filter = resolve_repo_list(repos, entries)
         except ScopeResolutionError as exc:
             raise ToolError(str(exc)) from exc
         generation = self._generation()
@@ -158,9 +191,11 @@ class GraphifyMeshServer:
         }
 
     def tool_find_similar(self, arguments: dict) -> dict:
-        node = arguments.get("node", "")
+        node = _validate_str(arguments, "node")
         k = _validate_k(arguments)
-        cross_repo_only = bool(arguments.get("cross_repo_only", False))
+        cross_repo_only = arguments.get("cross_repo_only", False)
+        if not isinstance(cross_repo_only, bool):
+            raise ToolError("'cross_repo_only' must be a boolean")
         generation = self._generation()
         result = similar_mod.find_similar(node, generation, k, cross_repo_only)
         return {
@@ -198,11 +233,12 @@ class GraphifyMeshServer:
         }
 
     def tool_context_pack(self, arguments: dict) -> dict:
-        goal = arguments.get("goal", "")
+        goal = _validate_str(arguments, "goal")
         token_budget = _validate_token_budget(arguments)
+        scope = _validate_scope(arguments)
         entries = self._registry_entries()
         try:
-            decision = resolve_scope(arguments.get("scope"), self.cwd, entries)
+            decision = resolve_scope(scope, self.cwd, entries)
         except ScopeResolutionError as exc:
             raise ToolError(str(exc)) from exc
         generation = self._generation()
@@ -219,6 +255,8 @@ class GraphifyMeshServer:
                     "community_name": c.community_name,
                     "confidence": c.confidence,
                     "snippet": c.snippet,
+                    "snippet_source": c.snippet_source,
+                    "snippet_stale": c.snippet_stale,
                     "score": c.score,
                 }
                 for c in result.cards
@@ -232,6 +270,19 @@ class GraphifyMeshServer:
             return self.store.generation
         except GenerationUnavailableError as exc:
             raise ToolError(str(exc)) from exc
+
+    def _merge_store_degraded(self, result: dict) -> dict:
+        """Store-level degraded markers (e.g.
+        "reload_rejected_previous_generation_still_serving",
+        "embeddings_generation_mismatch") are merged into EVERY tool
+        response's `degraded` list — this is the single place they surface
+        to clients; nothing reads them out of the manifest."""
+        if not isinstance(result, dict):
+            return result
+        merged = set(self.store.degraded)
+        merged.update(result.get("degraded", []))
+        result["degraded"] = sorted(merged)
+        return result
 
     # --- MCP wiring -------------------------------------------------------
 
@@ -336,6 +387,7 @@ class GraphifyMeshServer:
         method = getattr(self, method_name)
         try:
             result = method(arguments or {})
+            result = self._merge_store_degraded(result)
             return {"content": [{"type": "text", "text": json.dumps(result)}], "isError": False}
         except ToolError as exc:
             return {"content": [{"type": "text", "text": str(exc)}], "isError": True}
@@ -353,6 +405,13 @@ class GraphifyMeshServer:
         request_id = message.get("id")
         is_notification = "id" not in message
 
+        # JSON-RPC 2.0: a notification (no "id" member) NEVER gets a
+        # response — not a result, not an error — regardless of whether the
+        # method is known. Guard here so no branch below can answer an
+        # id-less request with `"id": null`.
+        if is_notification:
+            return None
+
         if method == "initialize":
             return protocol.result_response(
                 request_id,
@@ -362,18 +421,32 @@ class GraphifyMeshServer:
                     "capabilities": {"tools": {}},
                 },
             )
-        if method == "notifications/initialized":
-            return None  # notification: no response due
         if method == "tools/list":
             return protocol.result_response(request_id, {"tools": self.tool_schemas()})
         if method == "tools/call":
-            params = message.get("params", {}) or {}
-            result = self.call_tool(params.get("name", ""), params.get("arguments", {}))
+            params = message.get("params")
+            if params is None:
+                params = {}
+            if not isinstance(params, dict):
+                return protocol.error_response(
+                    request_id, -32602, "invalid params: 'params' must be an object"
+                )
+            name = params.get("name", "")
+            if not isinstance(name, str):
+                return protocol.error_response(
+                    request_id, -32602, "invalid params: 'name' must be a string"
+                )
+            arguments = params.get("arguments")
+            if arguments is None:
+                arguments = {}
+            if not isinstance(arguments, dict):
+                return protocol.error_response(
+                    request_id, -32602, "invalid params: 'arguments' must be an object"
+                )
+            result = self.call_tool(name, arguments)
             return protocol.result_response(request_id, result)
         if method == "ping":
             return protocol.result_response(request_id, {})
-        if is_notification:
-            return None  # unknown notification: silently ignored, never errors
         return protocol.error_response(request_id, -32601, f"method not found: {method!r}")
 
 

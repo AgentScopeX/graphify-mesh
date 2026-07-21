@@ -19,6 +19,17 @@ import shutil
 import time
 from pathlib import Path
 
+# Every file the pipeline's full publish sequence writes into a generation
+# dir. Completeness for pruning is manifest-aware (see `_is_incomplete` in
+# `prune_old_generations`): the manifest's `artifact_sha256` map, not this
+# tuple, decides which artifacts a given generation must carry.
+EXPECTED_GENERATION_ARTIFACTS = (
+    "global-graph.json",
+    "cross-project-overlay.json",
+    "lexical-index.json",
+    "generation-manifest.json",
+)
+
 
 def make_generation_id(output_hash: str) -> str:
     # Second-precision timestamp + content-hash prefix is not sufficient to
@@ -38,58 +49,107 @@ def _fsync_dir(path: Path) -> None:
         os.close(fd)
 
 
-def _write_json_atomic(path: Path, data: dict, **dumps_kwargs) -> None:
+def _write_json_atomic(path: Path, data: dict, **encoder_kwargs) -> str:
     """Write via tmp-file + rename so an interrupted write can never leave a
     truncated .json in a generation dir. `current` is only flipped after all
     writes, so a partial file was never *served* — but a stranded generation
     dir with half a graph in it is a trap for the manual-rollback procedure
-    (ROLLBACK.md points operators at old generation dirs directly)."""
+    (ROLLBACK.md points operators at old generation dirs directly).
+
+    Streams `json.JSONEncoder.iterencode` chunks straight to the file — the
+    whole serialized artifact (global-graph.json alone can be tens of MB,
+    lexical-index.json 100+ MB) is never materialized as one string in RAM.
+    Returns the sha256 hex digest of the raw bytes actually written to the
+    tmp file (computed before the rename), so the caller can record
+    per-artifact content hashes in the generation manifest."""
     tmp_path = path.with_name(path.name + ".tmp")
+    hasher = hashlib.sha256()
+    encoder = json.JSONEncoder(**encoder_kwargs)
     # fsync file DATA before rename: rename alone can become durable while
     # the contents are not (power loss), leaving an empty/garbage .json
     # behind an already-flipped `current`.
-    with tmp_path.open("w", encoding="utf-8") as fh:
-        fh.write(json.dumps(data, **dumps_kwargs))
+    with tmp_path.open("wb") as fh:
+        for chunk in encoder.iterencode(data):
+            raw = chunk.encode("utf-8")
+            hasher.update(raw)
+            fh.write(raw)
         fh.flush()
         os.fsync(fh.fileno())
     os.rename(str(tmp_path), str(path))
+    return hasher.hexdigest()
+
+
+def create_generation_dir(generations_dir: Path, generation_id: str) -> Path:
+    gen_dir = generations_dir / generation_id
+    gen_dir.mkdir(parents=True, exist_ok=False)
+    return gen_dir
+
+
+def write_global_graph(gen_dir: Path, graph_data: dict) -> str:
+    """Stage global-graph.json into the generation dir. Compact separators —
+    the merged graph is the largest artifact after the lexical index, and
+    indentation roughly doubles its on-disk/serialization size for zero
+    benefit (it is only ever read back by json.loads). Returns the sha256 of
+    the bytes written, for the manifest's `artifact_sha256` map."""
+    graph_path = gen_dir / "global-graph.json"
+    digest = _write_json_atomic(graph_path, graph_data, separators=(",", ":"))
+    _fsync_dir(gen_dir)
+    return digest
+
+
+def write_manifest(generations_dir: Path, gen_dir: Path, manifest: dict) -> None:
+    """Stage generation-manifest.json LAST, after every other artifact in the
+    generation dir has been written — the manifest's `artifact_sha256` map
+    covers those files' bytes, so it can only be produced once they exist.
+    The manifest is small; keep indent=2 + sort_keys for human debuggability."""
+    manifest_path = gen_dir / "generation-manifest.json"
+    _write_json_atomic(manifest_path, manifest, indent=2, sort_keys=True)
+    _fsync_dir(gen_dir)
+    _fsync_dir(generations_dir)
 
 
 def write_generation(
     generations_dir: Path, generation_id: str, graph_data: dict, manifest: dict
 ) -> Path:
-    gen_dir = generations_dir / generation_id
-    gen_dir.mkdir(parents=True, exist_ok=False)
-    graph_path = gen_dir / "global-graph.json"
-    manifest_path = gen_dir / "generation-manifest.json"
-    _write_json_atomic(graph_path, graph_data, indent=2)
-    _write_json_atomic(manifest_path, manifest, indent=2, sort_keys=True)
-    _fsync_dir(gen_dir)
-    _fsync_dir(generations_dir)
+    """Compat entry point (pre-`artifact_sha256` publish shape): create the
+    generation dir and stage global-graph.json + generation-manifest.json.
+    The pipeline itself no longer uses this — it calls
+    `create_generation_dir`/`write_global_graph`/`write_overlay`/
+    `write_lexical_index` and then `write_manifest` LAST, so the manifest's
+    `artifact_sha256` map can cover every other artifact's written bytes.
+    Manifests written through this wrapper carry no `artifact_sha256`."""
+    gen_dir = create_generation_dir(generations_dir, generation_id)
+    write_global_graph(gen_dir, graph_data)
+    write_manifest(generations_dir, gen_dir, manifest)
     return gen_dir
 
 
-def write_overlay(gen_dir: Path, overlay_data: dict) -> Path:
+def write_overlay(gen_dir: Path, overlay_data: dict) -> str:
     """WS4: stage the cross-project overlay artifact inside the SAME
     generation dir as `global-graph.json`/`generation-manifest.json`, so it
     flips atomically with everything else on `flip_current` — but as an
-    entirely separate file, never merged into `global-graph.json` (C5)."""
+    entirely separate file, never merged into `global-graph.json` (C5).
+    Returns the sha256 of the bytes written (`artifact_sha256` manifest map).
+    sort_keys is retained for deterministic artifact bytes — the overlay
+    builder's output key order is owned by another module and is not
+    guaranteed sorted."""
     overlay_path = gen_dir / "cross-project-overlay.json"
-    _write_json_atomic(overlay_path, overlay_data, indent=2, sort_keys=True)
+    digest = _write_json_atomic(overlay_path, overlay_data, separators=(",", ":"), sort_keys=True)
     _fsync_dir(gen_dir)
-    return overlay_path
+    return digest
 
 
-def write_lexical_index(gen_dir: Path, lexical_data: dict) -> Path:
+def write_lexical_index(gen_dir: Path, lexical_data: dict) -> str:
     """WS5: stage the lexical-index bundle artifact inside the SAME
     generation dir as `global-graph.json`/`cross-project-overlay.json`, so it
     flips atomically with everything else on `flip_current`. Consumed
     read-only by the graphify-mesh companion MCP server, never written to at
-    query time."""
+    query time. Returns the sha256 of the bytes written (`artifact_sha256`
+    manifest map). sort_keys retained for deterministic artifact bytes."""
     lexical_path = gen_dir / "lexical-index.json"
-    _write_json_atomic(lexical_path, lexical_data, indent=2, sort_keys=True)
+    digest = _write_json_atomic(lexical_path, lexical_data, separators=(",", ":"), sort_keys=True)
     _fsync_dir(gen_dir)
-    return lexical_path
+    return digest
 
 
 def read_current_lexical_index(global_dir: Path) -> dict | None:
@@ -138,18 +198,21 @@ def prune_old_generations(generations_dir: Path, current: Path, keep: int = 2) -
     Each generation is a full copy of the merged graph + overlay + lexical
     index (global-graph.json alone can be tens of MB, lexical-index.json can
     exceed 100MB) — with no GC, a generation this large published on every
-    scheduled run (e.g. hourly) accumulates without bound. `write_generation`
-    never deletes anything itself (by design, so a crash mid-write never
+    scheduled run (e.g. hourly) accumulates without bound. The write helpers
+    never delete anything themselves (by design, so a crash mid-write never
     corrupts a previous good generation) — pruning only ever runs here,
     AFTER `flip_current` has already succeeded, so a crash during pruning
     can strand extra generation dirs (wasted disk) but can never remove the
     one `current` needs.
 
-    Also removes generation dirs that never finished publishing (e.g. a
-    dangling `<name>/lexical-index.json.tmp` with no matching `.json` —
-    the process was killed between `write_lexical_index`'s tmp-write and its
-    rename) — these were never `current` and are safe to delete outright,
-    keep-count aside.
+    Also removes generation dirs that never finished publishing — either a
+    dangling `<name>/lexical-index.json.tmp` with no matching `.json` (the
+    process was killed between `write_lexical_index`'s tmp-write and its
+    rename), a dir missing the manifest or global-graph.json outright, or a
+    dir whose manifest's `artifact_sha256` map names an artifact absent on
+    disk. These were never `current` and are safe to delete
+    outright, keep-count aside — and they must never occupy a keep slot that
+    would otherwise protect a complete generation.
     """
     if not generations_dir.is_dir():
         return []
@@ -158,7 +221,26 @@ def prune_old_generations(generations_dir: Path, current: Path, keep: int = 2) -
 
     def _is_incomplete(name: str) -> bool:
         gen_dir = generations_dir / name
-        return any(gen_dir.glob("*.tmp"))
+        if any(gen_dir.glob("*.tmp")):
+            return True
+        manifest_path = gen_dir / "generation-manifest.json"
+        if not manifest_path.is_file():
+            return True
+        if not (gen_dir / "global-graph.json").is_file():
+            return True
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return True
+        artifact_sha256 = manifest.get("artifact_sha256") if isinstance(manifest, dict) else None
+        if not isinstance(artifact_sha256, dict):
+            # Legacy manifest (e.g. via `write_generation`) with no
+            # artifact_sha256 map: graph + manifest present is complete.
+            return False
+        for artifact in artifact_sha256:
+            if not (gen_dir / artifact).is_file():
+                return True
+        return False
 
     incomplete = [n for n in all_names if n != current_name and _is_incomplete(n)]
     complete = [n for n in all_names if n not in incomplete]
@@ -179,8 +261,18 @@ def prune_old_generations(generations_dir: Path, current: Path, keep: int = 2) -
 
 
 def output_hash(graph_data: dict) -> str:
+    """sha256 of the canonical (sort_keys) JSON serialization, streamed
+    chunk-by-chunk into the hasher so the whole multi-MB string is never
+    materialized. MUST stay byte-equivalent to the historical
+    `json.dumps(graph_data, sort_keys=True)` — published manifests from older
+    generations embed hashes produced by that implementation, and the MCP
+    server recomputes this over global-graph.json to verify them. Separators
+    are pinned to `(", ", ": ")` — json.dumps's defaults when indent is None
+    (equality verified against json.dumps across unicode/float/inf inputs)."""
     h = hashlib.sha256()
-    h.update(json.dumps(graph_data, sort_keys=True).encode("utf-8"))
+    encoder = json.JSONEncoder(sort_keys=True, separators=(", ", ": "))
+    for chunk in encoder.iterencode(graph_data):
+        h.update(chunk.encode("utf-8"))
     return h.hexdigest()
 
 

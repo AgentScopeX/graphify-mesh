@@ -18,7 +18,10 @@ shared, only the input data shape differs.
 
 from __future__ import annotations
 
+import weakref
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import TypeVar
 
 from graphify_mesh.server import lexical_read, ranking
 from graphify_mesh.server.retrieval import Hit, _hit_from_key
@@ -40,6 +43,85 @@ class SimilarResult:
     degraded: list[str] = field(default_factory=list)
 
 
+_T = TypeVar("_T")
+
+
+def _per_generation_cache(build_fn: Callable[[Generation], _T]) -> Callable[[Generation], _T]:
+    """Lazy per-generation memoization WITHOUT touching `store.py`: the
+    cache lives in this module, keyed on the Generation instance's identity
+    (`id()`), with a `weakref.finalize` hook evicting the entry as soon as
+    the generation object is garbage-collected — so a recycled `id()` from
+    a later generation can never observe a stale index, and dropped
+    generations don't pin their indexes in memory. (`Generation` is a
+    non-frozen `eq=True` dataclass, hence unhashable — a plain
+    `WeakKeyDictionary` keyed on the instance is not an option.)"""
+    cache: dict[int, _T] = {}
+
+    def get(generation: Generation) -> _T:
+        cache_key = id(generation)
+        if cache_key in cache:
+            return cache[cache_key]
+        value = build_fn(generation)
+        cache[cache_key] = value
+        weakref.finalize(generation, cache.pop, cache_key, None)
+        return value
+
+    return get
+
+
+def _build_similar_edge_index(generation: Generation) -> dict[str, list[tuple[str, float, str]]]:
+    """One pass over the overlay edge list per generation: logical-ref key
+    -> [(other_key, confidence, provenance)] for `similar_approach` edges,
+    indexed under BOTH endpoints (a self-edge is indexed once, matching the
+    previous per-call scan's `if src == key ... elif tgt == key` behavior).
+    Per-key list order is overlay edge-list order, same as the old scan."""
+    index: dict[str, list[tuple[str, float, str]]] = {}
+    for edge in generation.overlay.get("edges", []):
+        if not isinstance(edge, dict):
+            continue
+        if edge.get("type") != "similar_approach":
+            continue
+        try:
+            src_key = LogicalRef.from_dict(edge["source"]).to_key()
+            tgt_key = LogicalRef.from_dict(edge["target"]).to_key()
+        except (KeyError, TypeError):
+            continue
+        confidence = float(edge.get("confidence", 0.0))
+        provenance = edge.get("provenance", "")
+        index.setdefault(src_key, []).append((tgt_key, confidence, provenance))
+        if tgt_key == src_key:
+            continue
+        index.setdefault(tgt_key, []).append((src_key, confidence, provenance))
+    return index
+
+
+_similar_edge_index = _per_generation_cache(_build_similar_edge_index)
+
+
+def _build_label_community_index(
+    generation: Generation,
+) -> dict[tuple[str, str], list[tuple[str, str | None, str]]]:
+    """One pass over all nodes per generation: (community_name,
+    normalized_label) -> [(node_id, repo, logical-ref key)] for every node
+    that has a durable key. Backs `fallback_exact_match` so each fallback
+    call is a dict lookup instead of an O(all nodes) normalize-per-node
+    scan."""
+    index: dict[tuple[str, str], list[tuple[str, str | None, str]]] = {}
+    for node_id, node in generation.node_by_id.items():
+        community = node.get("community_name")
+        if not community:
+            continue
+        node_key = generation.key_by_node_id.get(node_id)
+        if not node_key:
+            continue
+        norm = normalize_label(node.get("label", ""))
+        index.setdefault((community, norm), []).append((node_id, node.get("repo"), node_key))
+    return index
+
+
+_label_community_index = _per_generation_cache(_build_label_community_index)
+
+
 def resolve_key(query: str, generation: Generation) -> str | None:
     """Resolve a query through version-aware exact-alias lookup."""
     norm = normalize_alias_query(query.strip()) if query else ""
@@ -50,22 +132,7 @@ def resolve_key(query: str, generation: Generation) -> str | None:
 
 
 def overlay_similar_pairs(key: str, generation: Generation) -> list[tuple[str, float, str]]:
-    pairs: list[tuple[str, float, str]] = []
-    for edge in generation.overlay.get("edges", []):
-        if not isinstance(edge, dict) or edge.get("type") != "similar_approach":
-            continue
-        try:
-            src_key = LogicalRef.from_dict(edge["source"]).to_key()
-            tgt_key = LogicalRef.from_dict(edge["target"]).to_key()
-        except (KeyError, TypeError):
-            continue
-        confidence = float(edge.get("confidence", 0.0))
-        provenance = edge.get("provenance", "")
-        if src_key == key:
-            pairs.append((tgt_key, confidence, provenance))
-        elif tgt_key == key:
-            pairs.append((src_key, confidence, provenance))
-    return pairs
+    return list(_similar_edge_index(generation).get(key, []))
 
 
 def same_repo_structural_neighbors(key: str, generation: Generation) -> list[str]:
@@ -105,18 +172,14 @@ def fallback_exact_match(
     target_norm = normalize_label(label)
 
     matches = []
-    for other_id, other in generation.node_by_id.items():
+    for other_id, other_repo, other_key in _label_community_index(generation).get(
+        (community, target_norm), []
+    ):
         if other_id == node_id:
             continue
-        if other.get("community_name") != community:
+        if cross_repo_only and other_repo == repo:
             continue
-        if normalize_label(other.get("label", "")) != target_norm:
-            continue
-        if cross_repo_only and other.get("repo") == repo:
-            continue
-        other_key = generation.key_by_node_id.get(other_id)
-        if other_key:
-            matches.append(other_key)
+        matches.append(other_key)
     return sorted(matches)[:top_k]
 
 

@@ -136,9 +136,7 @@ def _build_varied_vectors(count: int, dims: tuple[int, ...] = (8, 64)) -> dict[s
     vectors: dict[str, np.ndarray] = {}
     for i in range(count):
         dim = dims[i % len(dims)]
-        vectors[f"k{i}"] = np.asarray(
-            [rng.uniform(-1, 1) for _ in range(dim)], dtype=np.float32
-        )
+        vectors[f"k{i}"] = np.asarray([rng.uniform(-1, 1) for _ in range(dim)], dtype=np.float32)
     return vectors
 
 
@@ -206,9 +204,9 @@ def test_mutual_top_k_pairs_invariants_hold_over_varied_vector_set():
     top_k = 3
     pairs = embed_similarity.mutual_top_k_pairs(vectors_by_repo, top_k=top_k, threshold=threshold)
     expected_anchor_pair = tuple(sorted((anchor_key_a, anchor_key_b)))
-    assert any(
-        (key_a, key_b) == expected_anchor_pair for key_a, key_b, _ in pairs
-    ), "anchor pair must be emitted"
+    assert any((key_a, key_b) == expected_anchor_pair for key_a, key_b, _ in pairs), (
+        "anchor pair must be emitted"
+    )
 
     seen_unordered: set[frozenset] = set()
     per_key_partners: dict[str, set[str]] = {}

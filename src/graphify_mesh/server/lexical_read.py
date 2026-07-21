@@ -93,11 +93,7 @@ def alias_refs(lexical: object, norm_alias: str) -> list[tuple[str, str]]:
     alias_exact = _get_dict(lexical, "alias_exact")
     entries = _get_entries(alias_exact, norm_alias)
     if _schema(lexical) == SCHEMA_V2:
-        return [
-            (e[0], e[1])
-            for e in entries
-            if isinstance(e, list) and len(e) == _V2_ALIAS_LEN
-        ]
+        return [(e[0], e[1]) for e in entries if isinstance(e, list) and len(e) == _V2_ALIAS_LEN]
     refs: list[tuple[str, str]] = []
     for doc_id in entries:
         ref = _doc_ref(lexical, doc_id)
@@ -112,9 +108,7 @@ def term_postings(lexical: object, term: str) -> list[tuple[str, str, str]]:
     entries = _get_entries(postings, term)
     if _schema(lexical) == SCHEMA_V2:
         return [
-            (e[0], e[1], e[2])
-            for e in entries
-            if isinstance(e, list) and len(e) == _V2_POSTING_LEN
+            (e[0], e[1], e[2]) for e in entries if isinstance(e, list) and len(e) == _V2_POSTING_LEN
         ]
     fields = _get_list(lexical, "fields")
     triples: list[tuple[str, str, str]] = []

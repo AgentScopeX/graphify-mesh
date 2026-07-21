@@ -142,6 +142,20 @@ class RunReport:
     stage_rss: dict = field(default_factory=dict)
 
 
+def _embedding_skip_reason(settings: Settings) -> str:
+    """Reason the embed stage must not run live Ollama /api/embed calls this
+    run, or "" to run it. Dry-run must be network-free here: with dry-run
+    project statuses being `would_*`, `unchanged_repo_ids` is always empty,
+    so shard reuse is fully defeated and every node would be re-embedded for
+    real — expensive live calls whose staged output is then discarded with
+    the staging dir anyway (dry-run never publishes/persists)."""
+    if settings.skip_embedding:
+        return "skipped (--skip-embedding)"
+    if settings.dry_run:
+        return "skipped (dry-run: live embedding calls suppressed; nothing would persist)"
+    return ""
+
+
 def _repos_for_run(registry: Registry, reconciliation: dict) -> list:
     removed = set(reconciliation["removed"])
     missing = set(reconciliation["missing"])
@@ -203,6 +217,11 @@ def _record_stage_rss(tracker: rss.StageRssTracker, report: RunReport) -> None:
 
 
 def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
+    # Staleness baseline for the eventual manifest: captured BEFORE any
+    # pipeline stage runs, so files edited DURING a long sync (mtime after
+    # this instant but before publish) still compare newer-than-baseline and
+    # get flagged stale by readers. `created_at` stays the publish stamp.
+    sync_started_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     tracker = rss.StageRssTracker()
     log.info("discovery: scanning %s ...", settings.scan_root)
     discovered = discover_filesystem(settings.scan_root, settings.approved_root)
@@ -261,6 +280,7 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
 
     total_active = len(active_repos)
     bar = progress.ProgressBar(total_active, label="indexing")
+    reconciliation_dict = reconciliation.to_dict()
     # Actionable repos (update/extract/bootstrap) are collected here and
     # executed on a bounded thread pool below (Task 7 perf plan). dry-run and
     # skip rows are cheap and stay fully inline. `apply_action` is
@@ -268,40 +288,52 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
     # snapshots), so running several concurrently is safe as long as nothing
     # shared is mutated until after every future has been joined.
     actionable: list[tuple[int, RepoEntry, Path, str, SourceDigest]] = []
-    for i, entry in enumerate(active_repos, start=1):
-        root = _root_for(entry, reconciliation.to_dict())
-        repo_roots_by_id[entry.repo_id] = root
-        graph_path = entry.collection_path / "graph.json"
-        has_graph = graph_path.exists()
-        current_manifest = compute_source_manifest(root)
-        prior_state = state.get(entry.repo_id)
-        action = decide_action(prior_state, current_manifest, has_graph)
-        log.info("[%d/%d] %s: %s ...", i, total_active, entry.repo_id, action)
-        bar.tick(i - 1, f"{entry.repo_id}: {action} ...")
-
-        if settings.dry_run:
-            planned_status = "would_bootstrap" if action == ACTION_BOOTSTRAP else f"would_{action}"
-            report.project_actions.append(
-                {"repo_id": entry.repo_id, "action": action, "status": planned_status}
-            )
-            if has_graph:
-                graph_paths_by_repo[entry.repo_id] = graph_path
-            bar.tick(i, f"{entry.repo_id}: {planned_status}")
-            continue
-
-        if action == ACTION_SKIP:
-            report.project_actions.append(
-                {"repo_id": entry.repo_id, "action": action, "status": "unchanged"}
-            )
-            graph_paths_by_repo[entry.repo_id] = graph_path
-            log.info("[%d/%d] %s: unchanged, skipped", i, total_active, entry.repo_id)
-            bar.tick(i, f"{entry.repo_id}: unchanged")
-            continue
-
-        actionable.append((i, entry, root, action, current_manifest))
-
     outcomes: dict[str, ProjectOutcome] = {}
     with ThreadPoolExecutor(max_workers=settings.extract_concurrency) as pool:
+        # Per-repo source-manifest computation (a full stat-walk of every
+        # repo tree) is pure read-only work, independent per repo — submit it
+        # all up front on the same bounded pool instead of walking each tree
+        # sequentially before any decision can be made.
+        manifest_futures = {
+            entry.repo_id: pool.submit(
+                compute_source_manifest, _root_for(entry, reconciliation_dict)
+            )
+            for entry in active_repos
+        }
+        for i, entry in enumerate(active_repos, start=1):
+            root = _root_for(entry, reconciliation_dict)
+            repo_roots_by_id[entry.repo_id] = root
+            graph_path = entry.collection_path / "graph.json"
+            has_graph = graph_path.exists()
+            current_manifest = manifest_futures[entry.repo_id].result()
+            prior_state = state.get(entry.repo_id)
+            action = decide_action(prior_state, current_manifest, has_graph)
+            log.info("[%d/%d] %s: %s ...", i, total_active, entry.repo_id, action)
+            bar.tick(i - 1, f"{entry.repo_id}: {action} ...")
+
+            if settings.dry_run:
+                planned_status = (
+                    "would_bootstrap" if action == ACTION_BOOTSTRAP else f"would_{action}"
+                )
+                report.project_actions.append(
+                    {"repo_id": entry.repo_id, "action": action, "status": planned_status}
+                )
+                if has_graph:
+                    graph_paths_by_repo[entry.repo_id] = graph_path
+                bar.tick(i, f"{entry.repo_id}: {planned_status}")
+                continue
+
+            if action == ACTION_SKIP:
+                report.project_actions.append(
+                    {"repo_id": entry.repo_id, "action": action, "status": "unchanged"}
+                )
+                graph_paths_by_repo[entry.repo_id] = graph_path
+                log.info("[%d/%d] %s: unchanged, skipped", i, total_active, entry.repo_id)
+                bar.tick(i, f"{entry.repo_id}: unchanged")
+                continue
+
+            actionable.append((i, entry, root, action, current_manifest))
+
         futures = {
             entry.repo_id: pool.submit(
                 apply_action,
@@ -317,7 +349,7 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
         # Consume futures in submission (sorted-registry) order, NOT
         # completion order, so logs/progress/report rows/state land in
         # exactly the same order the sequential loop used to produce.
-        for (i, entry, _root, action, _current_manifest) in actionable:
+        for i, entry, _root, action, _current_manifest in actionable:
             outcomes[entry.repo_id] = futures[entry.repo_id].result()
             log.info(
                 "[%d/%d] %s: %s (%s)",
@@ -332,7 +364,7 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
     # All shared-structure mutation happens here, single-threaded, strictly
     # after every future in `actionable` has been joined above — no locking
     # needed because nothing below runs concurrently with anything else.
-    for (_i, entry, _root, action, _current_manifest) in actionable:
+    for _i, entry, _root, action, _current_manifest in actionable:
         outcome = outcomes[entry.repo_id]
         graph_path = entry.collection_path / "graph.json"
         report.project_actions.append(
@@ -451,6 +483,11 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
             )
         else:
             graph_data = naming_result.graph_data
+    # The pre-naming stripped graph (same object as the pre-strip merged
+    # graph — strip_project_community_attrs mutates in place) is dead from
+    # here on: when naming returned a freshly parsed copy, keeping this
+    # alias pinned a second full graph in RAM through embed/overlay/lexical.
+    del stripped_graph_data
     tracker.mark("naming")
 
     # WS3: embed-changed stage. Runs after naming/label, before overlay-resolve
@@ -462,9 +499,11 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
     embedding_model_for_overlay = "unknown"
     embedding_recipe: dict = {}
     embeddings_staged_dir: Path | None = None
-    if settings.skip_embedding:
-        report.embedding_status = "skipped (--skip-embedding)"
-    else:
+    embed_skip_reason = _embedding_skip_reason(settings)
+    if embed_skip_reason:
+        report.embedding_status = embed_skip_reason
+        log.info("embedding: %s", embed_skip_reason)
+    if not embed_skip_reason:
         unchanged_repo_ids = {
             a["repo_id"] for a in report.project_actions if a.get("status") == "unchanged"
         }
@@ -522,6 +561,13 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
     # contract (WS5 deliverable 2) rather than a per-MCP-session rebuild.
     lexical_result = lexical_index.build_lexical_index(graphs_by_repo, repo_roots_by_id)
     report.lexical_index_stats = lexical_result.stats.to_dict()
+    # Last consumer of the per-repo raw graphs (embed -> overlay -> lexical
+    # all share this one load). Drop the full per-repo graph contents now
+    # rather than keeping them resident alongside the merged graph through
+    # validate/publish. (Dropped whole rather than slimmed to a field
+    # projection up front: the three consumer modules are evolving
+    # concurrently, so pinning their field usage here would be fragile.)
+    del graphs_by_repo
     tracker.mark("lexical_index")
 
     # Repo removal is intentional pruning (WS1 item 1: "removed repos get
@@ -568,12 +614,22 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
     graph_output_hash = publish.output_hash(graph_data)
     generation_id = publish.make_generation_id(graph_output_hash)
     created_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    # Per-repo input hashes: apply_action already hashed each graph.json it
+    # touched this run (carried on ProjectOutcome.graph_content_hash) —
+    # re-read only the repos it didn't (skip/broken/failed paths).
+    repo_input_hashes: dict[str, str | None] = {}
+    for rid in sorted_repo_ids:
+        repo_outcome = outcomes.get(rid)
+        carried = repo_outcome.graph_content_hash if repo_outcome is not None else None
+        if carried is not None:
+            repo_input_hashes[rid] = carried
+            continue
+        repo_input_hashes[rid] = file_content_hash(graph_paths_by_repo[rid])
     manifest = {
         "generation_id": generation_id,
         "created_at": created_at,
-        "repo_input_hashes": {
-            rid: file_content_hash(graph_paths_by_repo[rid]) for rid in sorted_repo_ids
-        },
+        "sync_started_at": sync_started_at,
+        "repo_input_hashes": repo_input_hashes,
         "registry_hash": registry_hash(settings.registry_path),
         "config_hash": config_hash(),
         "output_node_count": len(graph_data.get("nodes", [])),
@@ -601,17 +657,26 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
         "lexical_index_schema_version": lexical_index.LEXICAL_SCHEMA_VERSION,
         "lexical_index_stats": report.lexical_index_stats,
     }
-    gen_dir = publish.write_generation(
-        settings.generations_dir, generation_id, graph_data, manifest
-    )
+    gen_dir = publish.create_generation_dir(settings.generations_dir, generation_id)
+    artifact_sha256: dict[str, str] = {}
+    artifact_sha256["global-graph.json"] = publish.write_global_graph(gen_dir, graph_data)
     # WS4: overlay artifact is staged inside the SAME generation dir so it
     # flips atomically with global-graph.json/generation-manifest.json on
     # publish, but stays a wholly separate file — never merged into the
     # structural graph (C5).
     overlay_data = overlay.overlay_artifact(overlay_result, generation_id, created_at)
-    publish.write_overlay(gen_dir, overlay_data)
+    artifact_sha256["cross-project-overlay.json"] = publish.write_overlay(gen_dir, overlay_data)
     # WS5: lexical-index bundle artifact, same atomic-flip treatment.
-    publish.write_lexical_index(gen_dir, lexical_result.data)
+    artifact_sha256["lexical-index.json"] = publish.write_lexical_index(
+        gen_dir, lexical_result.data
+    )
+    # Raw-byte sha256 of every artifact as written (hashed from the tmp-file
+    # bytes before each atomic rename) — the companion MCP server verifies
+    # artifact integrity against this map. Legacy logical hashes
+    # (output_hash, repo_input_hashes) are untouched. Manifest is written
+    # LAST so it can cover the other artifacts' bytes.
+    manifest["artifact_sha256"] = artifact_sha256
+    publish.write_manifest(settings.generations_dir, gen_dir, manifest)
     publish.flip_current(settings.global_dir, gen_dir)
 
     # Structural generations (global-graph.json + overlay + lexical-index,

@@ -18,7 +18,7 @@ if str(_BIN_DIR) not in sys.path:
     sys.path.insert(0, str(_BIN_DIR))
 
 _GRAPH_SYNC_TESTS_DIR = Path(__file__).resolve().parents[1] / "sync"
-FIXTURES_DIR = _GRAPH_SYNC_TESTS_DIR / "fixtures"
+FIXTURES_DIR = Path(__file__).resolve().parents[1] / "fixtures"
 FAKE_GRAPHIFY = FIXTURES_DIR / "fake_graphify" / "graphify"
 GRAPHS_DIR = FIXTURES_DIR / "graphs"
 

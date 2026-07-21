@@ -10,7 +10,7 @@ from graphify_mesh.sync import embedding
 from graphify_mesh.sync.config import Settings
 from graphify_mesh.sync.vectors import RepoVectors
 
-FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
+FIXTURES_DIR = Path(__file__).resolve().parents[1] / "fixtures"
 FAKE_GRAPHIFY = FIXTURES_DIR / "fake_graphify" / "graphify"
 
 
@@ -618,9 +618,7 @@ def test_read_previous_shard_v1_json_compat(tmp_path):
 
 
 def test_read_previous_shard_v2_roundtrip(tmp_path):
-    vectors = RepoVectors.from_mapping(
-        {"k1": [1.0, 2.0], "k2": [3.0, 4.0]}
-    )
+    vectors = RepoVectors.from_mapping({"k1": [1.0, 2.0], "k2": [3.0, 4.0]})
     shard = embedding.RepoShard(
         entries={
             "k1": {"content_hash": "h1", "row": 0},
@@ -639,9 +637,7 @@ def test_read_previous_shard_v2_roundtrip(tmp_path):
 
 def test_read_previous_shard_v2_missing_npy_is_empty(tmp_path):
     vectors = RepoVectors.from_mapping({"k1": [1.0, 2.0]})
-    shard = embedding.RepoShard(
-        entries={"k1": {"content_hash": "h1", "row": 0}}, vectors=vectors
-    )
+    shard = embedding.RepoShard(entries={"k1": {"content_hash": "h1", "row": 0}}, vectors=vectors)
     out_dir = embedding.stage_embeddings(tmp_path, {"repoA": shard}, id_map={})
     (out_dir / "repoA.npy").unlink()
 
@@ -826,9 +822,7 @@ def test_read_previous_shard_v2_takes_priority_over_stale_v1(tmp_path):
     # If both a v1 .json and v2 .meta.json/.npy exist for the same repo_id
     # (e.g. leftover from an older generation dir), v2 must win.
     vectors = RepoVectors.from_mapping({"k1": [1.0]})
-    shard = embedding.RepoShard(
-        entries={"k1": {"content_hash": "h1", "row": 0}}, vectors=vectors
-    )
+    shard = embedding.RepoShard(entries={"k1": {"content_hash": "h1", "row": 0}}, vectors=vectors)
     out_dir = embedding.stage_embeddings(tmp_path, {"repoA": shard}, id_map={})
     (out_dir / "repoA.json").write_text(
         json.dumps(

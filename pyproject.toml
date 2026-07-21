@@ -41,8 +41,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-test = ["pytest>=9.0.3,<10"]
-lint = ["ruff>=0.5,<1.0", "mypy>=1.10,<2", "types-PyYAML", "types-jsonschema"]
+test = ["pytest>=9.0.3,<10", "pytest-cov>=5,<8"]
+lint = [
+    "ruff>=0.5,<1.0",
+    "mypy>=1.10,<2",
+    "types-PyYAML",
+    "types-jsonschema",
+    # NumPy 2.5 stubs use Python 3.12 syntax, while mypy intentionally checks
+    # the project's minimum supported Python version (3.11).
+    "numpy<2.5",
+]
+dev = ["graphify-mesh[test,lint]"]
 
 [project.urls]
 Homepage = "https://github.com/AgentScopeX/graphify-mesh"

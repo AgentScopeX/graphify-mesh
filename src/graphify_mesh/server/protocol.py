@@ -46,7 +46,9 @@ def _drain_line(stream) -> None:
             return
 
 
-def read_messages(stream=None) -> Iterator[dict]:
+def _read_lines(stream=None) -> Iterator[str]:
+    """Yields complete, non-empty, size-capped lines. Oversized lines are
+    drained and skipped (never buffered whole). Returns on EOF."""
     stream = stream if stream is not None else sys.stdin
     while True:
         raw_line = stream.readline(MAX_LINE_BYTES + 1)
@@ -61,6 +63,15 @@ def read_messages(stream=None) -> Iterator[dict]:
         line = raw_line.strip()
         if not line:
             continue
+        yield line
+
+
+def read_messages(stream=None) -> Iterator[dict]:
+    """Lenient message iterator: unparseable lines and non-dict payloads are
+    silently skipped. `serve()` does NOT use this — the dispatch loop there
+    answers such frames with proper JSON-RPC errors instead of dropping
+    them; this stays for callers that only want the well-formed messages."""
+    for line in _read_lines(stream):
         try:
             message = json.loads(line)
         except json.JSONDecodeError:
@@ -86,8 +97,30 @@ def result_response(request_id, result: dict) -> dict:
 def serve(handler: JsonRpcHandler, in_stream=None, out_stream=None) -> None:
     """Blocking dispatch loop. Returns (does not raise) the instant
     `in_stream` hits EOF — the only clean-exit contract this transport
-    needs (WS6)."""
-    for message in read_messages(in_stream):
+    needs (WS6).
+
+    Malformed frames get proper JSON-RPC error responses instead of being
+    silently dropped (a client would otherwise block until its own timeout):
+    unparseable JSON -> -32700 parse error with id null; a parseable payload
+    that is not a single JSON-RPC object (including batch arrays, which this
+    transport does not support) -> -32600 invalid request with id null."""
+    for line in _read_lines(in_stream):
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError:
+            write_message(error_response(None, -32700, "parse error"), out_stream)
+            continue
+        if not isinstance(message, dict):
+            write_message(
+                error_response(
+                    None,
+                    -32600,
+                    "invalid request: expected a single JSON-RPC object "
+                    "(batch requests are not supported)",
+                ),
+                out_stream,
+            )
+            continue
         try:
             response = handler(message)
         except Exception:

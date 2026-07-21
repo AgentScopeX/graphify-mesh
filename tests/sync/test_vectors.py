@@ -27,9 +27,7 @@ def test_from_mapping_first_sorted_key_sets_reference_dim():
     # dim 3 (a numeric majority) but must still be dropped, because the
     # reference dimension is the first non-empty vector in sorted-key order,
     # not a majority vote.
-    rv = RepoVectors.from_mapping(
-        {"a": [1.0, 2.0], "b": [1.0, 2.0, 3.0], "c": [4.0, 5.0, 6.0]}
-    )
+    rv = RepoVectors.from_mapping({"a": [1.0, 2.0], "b": [1.0, 2.0, 3.0], "c": [4.0, 5.0, 6.0]})
     assert rv.keys == ["a"]
     assert rv.matrix.shape == (1, 2)
 
@@ -44,9 +42,7 @@ def test_empty_container():
 def test_from_mapping_accepts_ndarray_values():
     # Reuse path passes previous rows through as ndarrays (no per-key list
     # copy) — from_mapping must accept a mix of ndarray and list values.
-    rv = RepoVectors.from_mapping(
-        {"a": np.array([1.0, 2.0], dtype=np.float32), "b": [3.0, 4.0]}
-    )
+    rv = RepoVectors.from_mapping({"a": np.array([1.0, 2.0], dtype=np.float32), "b": [3.0, 4.0]})
     assert rv.keys == ["a", "b"]
     assert rv.matrix.dtype == np.float32
     assert rv.matrix.shape == (2, 2)
@@ -54,9 +50,7 @@ def test_from_mapping_accepts_ndarray_values():
 
 
 def test_from_mapping_drops_empty_ndarray():
-    rv = RepoVectors.from_mapping(
-        {"a": [1.0, 2.0], "b": np.array([], dtype=np.float32)}
-    )
+    rv = RepoVectors.from_mapping({"a": [1.0, 2.0], "b": np.array([], dtype=np.float32)})
     assert rv.keys == ["a"]
 
 

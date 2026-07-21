@@ -27,10 +27,10 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install the upstream graphify CLI (required by the test suite)
-        run: pip install "graphifyy @ git+https://github.com/Graphify-Labs/graphify"
-
       - name: Install graphify-mesh with test extras
+        # graphifyy (the upstream graphify CLI/library) is a declared
+        # dependency (pinned in pyproject.toml), so this pulls the released
+        # version from PyPI — same as ci.yml, never an unpinned git HEAD.
         run: pip install -e ".[test]"
 
       - name: Run the full test suite (release aborts if this fails)
@@ -214,15 +214,28 @@ jobs:
           PY
 
       - name: Commit and push the updated index
+        # gh-pages history is preserved: when the branch exists it was
+        # checked out into pages/ above (with push credentials persisted by
+        # actions/checkout), so we commit on top of it and push normally —
+        # never `git init` + `git push --force`, which discarded the whole
+        # branch history on every release. Only the very first release
+        # (branch doesn't exist yet) initializes a fresh repo, and even then
+        # the push creates the branch without --force.
         working-directory: pages
         run: |
-          git init -b gh-pages
+          if [ ! -d .git ]; then
+            git init -b gh-pages
+            git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" 2>/dev/null || true
           git add simple
-          git commit -m "publish ${TAG}: update PEP 503 simple index" || echo "nothing to commit"
-          git push --force origin gh-pages
+          if git diff --cached --quiet; then
+            echo "nothing to commit"
+            exit 0
+          fi
+          git commit -m "publish ${TAG}: update PEP 503 simple index"
+          git push origin gh-pages
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}

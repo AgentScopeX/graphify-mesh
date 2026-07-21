@@ -7,6 +7,7 @@ per project code style rules.
 
 from __future__ import annotations
 
+import os
 import shutil
 import tempfile
 from dataclasses import dataclass
@@ -16,7 +17,7 @@ from graphify_mesh.sync import graphify_cli
 from graphify_mesh.sync.state import (
     SourceDigest,
     file_content_hash,
-    graph_node_edge_counts,
+    graph_hash_and_counts,
     is_worktree_dirty,
 )
 
@@ -42,6 +43,11 @@ class ProjectOutcome:
     reason: str = ""
     dirty_worktree: bool = False
     new_manifest: SourceDigest | None = None
+    # sha256 of the repo's graph.json AS LEFT ON DISK by this outcome, when
+    # known. Publish reuses it for the manifest's repo_input_hashes instead
+    # of re-reading every per-repo graph.json; None means "not computed here,
+    # hash at publish time" (skip/broken/failed paths).
+    graph_content_hash: str | None = None
 
 
 def decide_action(prior_state: dict | None, current_manifest: SourceDigest, has_graph: bool) -> str:
@@ -103,13 +109,12 @@ def apply_action(
         )
 
     snapshot_path: Path | None = None
-    old_hash = file_content_hash(graph_path)
-    old_counts = graph_node_edge_counts(graph_path) or (0, 0)
+    # Single read of graph.json: hash + counts from the same buffer.
+    old_hash, old_counts_opt = graph_hash_and_counts(graph_path)
+    old_counts = old_counts_opt or (0, 0)
     if graph_path.exists():
         fd, tmp_name = tempfile.mkstemp(prefix="graphify-mesh-sync-snapshot-", suffix=".json")
-        import os as _os
-
-        _os.close(fd)
+        os.close(fd)
         snapshot_path = Path(tmp_name)
         shutil.copy2(graph_path, snapshot_path)
 
@@ -145,6 +150,7 @@ def apply_action(
             STATUS_BOOTSTRAPPED,
             dirty_worktree=dirty,
             new_manifest=current_manifest,
+            graph_content_hash=file_content_hash(graph_path),
         )
 
     if not graph_path.exists():
@@ -158,15 +164,22 @@ def apply_action(
             dirty_worktree=dirty,
         )
 
-    new_hash = file_content_hash(graph_path)
-    new_counts = graph_node_edge_counts(graph_path) or (0, 0)
+    # Single read of the freshly written graph.json: hash + counts from the
+    # same buffer.
+    new_hash, new_counts_opt = graph_hash_and_counts(graph_path)
+    new_counts = new_counts_opt or (0, 0)
 
     if old_hash is None:
         # No prior file existed even though has_graph was assumed true
         # upstream (race) — accept whatever was produced.
         _cleanup_snapshot(snapshot_path)
         return ProjectOutcome(
-            repo_id, action, STATUS_UPDATED, dirty_worktree=dirty, new_manifest=current_manifest
+            repo_id,
+            action,
+            STATUS_UPDATED,
+            dirty_worktree=dirty,
+            new_manifest=current_manifest,
+            graph_content_hash=new_hash,
         )
 
     outcome_status = _classify_shrink(old_hash, new_hash or "", old_counts, new_counts)
@@ -186,9 +199,19 @@ def apply_action(
         )
 
     _cleanup_snapshot(snapshot_path)
-    new_manifest = current_manifest if outcome_status == STATUS_UPDATED else current_manifest
+    # State advances to current_manifest for BOTH remaining statuses here
+    # (STATUS_UPDATED and STATUS_NOOP): a NOOP means the source changed but
+    # the CLI produced byte-identical output — the source digest must still
+    # advance, or every subsequent run would re-invoke the CLI for the same
+    # no-op change. The two branches were always identical; the old
+    # conditional was dead.
     return ProjectOutcome(
-        repo_id, action, outcome_status, dirty_worktree=dirty, new_manifest=new_manifest
+        repo_id,
+        action,
+        outcome_status,
+        dirty_worktree=dirty,
+        new_manifest=current_manifest,
+        graph_content_hash=new_hash,
     )
 
 

@@ -130,6 +130,14 @@ def vector_candidates(
     safe_query_norm = query_norm if query_norm != 0.0 else 1.0
     normalized_query = query_vec / safe_query_norm
 
+    # Per repo, pull only the top-`depth` scores via np.argpartition instead
+    # of materializing (key, score) for EVERY embedded node across all repos
+    # and full-sorting that one giant Python list per query. Boundary ties
+    # are kept (everything scoring >= the depth-th largest value), so the
+    # merged shortlist provably contains every key the old global sort could
+    # have selected — the final sort below then applies the exact same
+    # tie-break semantics (score desc, then key) on <= depth x n_repos
+    # candidates (plus ties).
     scored: list[tuple[str, float]] = []
     for repo_id, repo_vectors in embeddings.items():
         if repo_filter is not None and repo_id not in repo_filter:
@@ -137,8 +145,15 @@ def vector_candidates(
         if len(repo_vectors) == 0:
             continue
         scores = _repo_scores(repo_vectors, normalized_query)
-        for key, score in zip(repo_vectors.keys, scores, strict=True):
-            scored.append((key, float(score)))
+        n_rows = scores.shape[0]
+        if depth >= n_rows:
+            top_idx = np.arange(n_rows)
+        if depth < n_rows:
+            partition = np.argpartition(scores, -depth)
+            threshold = scores[partition[-depth]]
+            top_idx = np.nonzero(scores >= threshold)[0]
+        for idx in top_idx:
+            scored.append((repo_vectors.keys[int(idx)], float(scores[int(idx)])))
     scored.sort(key=lambda kv: (-kv[1], kv[0]))
     return [k for k, _ in scored[:depth]], False
 
@@ -207,7 +222,10 @@ def rank(
     lexical+vector+structural candidate generation, RRF fusion, hub/
     DEPRECATED penalties, MMR diversification, deterministic tie-break."""
     k = max(1, min(k, ranking.MAX_K))
-    degraded: list[str] = list(generation.manifest.get("_runtime_degraded", []))
+    # Store-level degraded markers (reload rejections, embeddings stamp
+    # problems, ...) are merged into every tool response by the server layer
+    # (`GraphifyMeshServer.call_tool`), not read out of the manifest here.
+    degraded: list[str] = []
 
     exact_keys = exact_alias_hits(query, generation.lexical, repo_filter)
     exact_hits = [

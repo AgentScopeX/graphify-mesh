@@ -11,7 +11,7 @@ _BIN_DIR = Path(__file__).resolve().parents[2] / "src"
 if str(_BIN_DIR) not in sys.path:
     sys.path.insert(0, str(_BIN_DIR))
 
-FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
+FIXTURES_DIR = Path(__file__).resolve().parents[1] / "fixtures"
 FAKE_GRAPHIFY = FIXTURES_DIR / "fake_graphify" / "graphify"
 GRAPHS_DIR = FIXTURES_DIR / "graphs"
 

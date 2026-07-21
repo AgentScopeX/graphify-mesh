@@ -35,14 +35,34 @@ class SourceDigest:
 
 
 def compute_source_manifest(root: Path) -> SourceDigest:
-    """Walk root, hashing (relpath, size, mtime_ns) separately per category."""
+    """Walk root, hashing (relpath, size, mtime_ns) separately per category.
+
+    Uses os.walk with in-place `dirnames` pruning so ignored trees
+    (node_modules/.git/vendor/...) are never even descended into — the old
+    `sorted(root.rglob("*"))` enumerated every one of their entries just to
+    filter them out again. The candidate list is still sorted with Path
+    ordering and every path still passes the exact same full-`parts` ignore
+    filter, so entry order and content — and therefore the digest — are
+    byte-identical to the rglob implementation for unchanged trees (state
+    compatibility)."""
     code_entries: list[str] = []
     semantic_entries: list[str] = []
     count = 0
     if not root.is_dir():
         return SourceDigest(code_hash="empty", semantic_hash="empty", file_count=0)
 
-    for path in sorted(root.rglob("*")):
+    candidates: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d not in IGNORED_DIR_NAMES)
+        base = Path(dirpath)
+        for filename in filenames:
+            candidates.append(base / filename)
+
+    for path in sorted(candidates):
+        # Kept identical to the rglob-era filter (checked against the FULL
+        # path parts, filename included): a *file* named e.g. `vendor`, or a
+        # root that itself lives under an ignored dir, must keep hashing the
+        # same as before.
         if any(part in IGNORED_DIR_NAMES for part in path.parts):
             continue
         if not path.is_file():
@@ -139,6 +159,28 @@ def file_content_hash(path: Path) -> str | None:
     h = hashlib.sha256()
     h.update(path.read_bytes())
     return h.hexdigest()
+
+
+def graph_hash_and_counts(path: Path) -> tuple[str | None, tuple[int, int] | None]:
+    """Read graph.json's bytes exactly once; derive both the content hash and
+    the node/edge counts from the same buffer (the shrink-guard in
+    sync_project.apply_action needs both, per side — reading the file twice
+    doubled I/O on every update/extract). Returns (None, None) for a missing
+    or unreadable file; (hash, None) when the bytes exist but are not valid
+    JSON — mirroring file_content_hash/graph_node_edge_counts semantics."""
+    if not path.exists():
+        return None, None
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return None, None
+    digest = hashlib.sha256(raw).hexdigest()
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return digest, None
+    counts = (len(data.get("nodes", [])), len(data.get("links", data.get("edges", []))))
+    return digest, counts
 
 
 def graph_node_edge_counts(path: Path) -> tuple[int, int] | None:

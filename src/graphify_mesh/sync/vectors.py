@@ -9,6 +9,7 @@ instead of Python-level float lists.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -26,12 +27,66 @@ def _is_empty_vector(vector: list[float] | np.ndarray) -> bool:
     return not vector
 
 
+class _NormalizedRows:
+    """Lazy L2-normalized view over a ``RepoVectors`` matrix.
+
+    Replaces the eagerly-materialized normalized float32 copy ``normalized()``
+    used to build and cache: that copy pulled every (possibly mmap'd) shard
+    matrix fully into RAM for the process lifetime, defeating the mmap
+    read path entirely (the server is one process per client session). This
+    view keeps the backing matrix untouched — mmap'd or not — and holds only
+    the per-row safe-norms vector (n float32), computing normalized values
+    on demand for the two operations callers actually perform:
+
+      * ``view @ query`` (server scoring, retrieval.py) —
+        ``(matrix @ query) / norms``, one (n,) allocation;
+      * ``view[row]`` / ``view[slice]`` (bucket gathering,
+        embed_similarity.py) — divides just the requested rows.
+
+    ``__array__`` exists purely as a compatibility net for any consumer that
+    insists on a full ndarray — it materializes the complete normalized
+    matrix, so nothing on the hot paths should hit it.
+    """
+
+    def __init__(self, matrix: np.ndarray, safe_norms: np.ndarray) -> None:
+        self.matrix = matrix
+        # shape (n,), float32; zero-norm rows carry 1.0 so all-zero vectors
+        # stay all-zero instead of producing NaN/inf (same rule as before).
+        self.safe_norms = safe_norms
+
+    def __matmul__(self, other: np.ndarray) -> np.ndarray:
+        return (self.matrix @ other) / self.safe_norms
+
+    def __getitem__(self, index):
+        rows = self.matrix[index]
+        if rows.ndim == 1:
+            return rows / self.safe_norms[index]
+        return rows / self.safe_norms[index][:, np.newaxis]
+
+    def __len__(self) -> int:
+        return self.matrix.shape[0]
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        return self.matrix.shape
+
+    @property
+    def dtype(self) -> np.dtype:
+        return self.matrix.dtype
+
+    def __array__(self, dtype=None) -> np.ndarray:
+        full = self.matrix / self.safe_norms[:, np.newaxis]
+        if dtype is None:
+            return full.astype(np.float32, copy=False)
+        return full.astype(dtype, copy=False)
+
+
 @dataclass
 class RepoVectors:
     keys: list[str]  # sorted; row i of matrix belongs to keys[i]
     matrix: np.ndarray  # float32, shape (len(keys), dim); may be a read-only mmap
     _index: dict[str, int] = field(default_factory=dict, repr=False, compare=False)
-    _normalized: np.ndarray | None = field(default=None, repr=False, compare=False)
+    _normalized: _NormalizedRows | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if self._index:
@@ -39,7 +94,7 @@ class RepoVectors:
         self._index = {key: i for i, key in enumerate(self.keys)}
 
     @classmethod
-    def from_mapping(cls, vectors: dict[str, list[float] | np.ndarray]) -> RepoVectors:
+    def from_mapping(cls, vectors: Mapping[str, list[float] | np.ndarray]) -> RepoVectors:
         """Build a RepoVectors from a ``{key: [float, ...]}`` mapping.
 
         Values may be plain float lists or 1-D numpy arrays (e.g. rows
@@ -75,8 +130,7 @@ class RepoVectors:
                 candidate = np.asarray(vector, dtype=np.float32)
             except (ValueError, TypeError, OverflowError):
                 log.warning(
-                    "RepoVectors.from_mapping: dropping key %r with non-numeric "
-                    "value (type %s)",
+                    "RepoVectors.from_mapping: dropping key %r with non-numeric value (type %s)",
                     key,
                     type(vector).__name__,
                 )
@@ -150,9 +204,7 @@ class RepoVectors:
         return len(self.keys)
 
     def to_mapping(self) -> dict[str, list[float]]:
-        return {
-            key: [float(x) for x in self.matrix[i]] for i, key in enumerate(self.keys)
-        }
+        return {key: [float(x) for x in self.matrix[i]] for i, key in enumerate(self.keys)}
 
     @property
     def dim(self) -> int:
@@ -160,20 +212,23 @@ class RepoVectors:
             return 0
         return self.matrix.shape[1]
 
-    def normalized(self) -> np.ndarray:
-        """L2-normalized float32 copy of ``matrix``: each row divided by its
-        own L2 norm. Rows with zero norm (all-zero vectors — e.g. a
-        trivial-skip placeholder) are never divided by zero; they stay
-        all-zero in the output instead of producing NaN/inf.
+    def normalized(self) -> _NormalizedRows:
+        """L2-normalized view of ``matrix``: row i behaves as ``matrix[i]``
+        divided by its own L2 norm. Rows with zero norm (all-zero vectors —
+        e.g. a trivial-skip placeholder) are never divided by zero; they stay
+        all-zero instead of producing NaN/inf.
 
-        Computed once and cached on this instance (`is`-stable across
-        calls) — the server re-uses the same generation's `RepoVectors`
-        across many queries within a process lifetime, so normalizing once
-        amortizes the cost over all of them instead of paying it per
-        query."""
+        Unlike the previous implementation this no longer materializes a
+        full float32 copy of the matrix (which defeated the mmap'd-shard
+        read path for the process lifetime): only the per-row norms vector
+        (n float32) is computed, and the returned `_NormalizedRows` view
+        divides on demand (`view @ query` for scoring, `view[row]` for
+        bucket gathering). Built once and cached on this instance
+        (`is`-stable across calls), so per-query/per-bucket work never
+        recomputes norms."""
         if self._normalized is not None:
             return self._normalized
-        norms = np.linalg.norm(self.matrix, axis=1, keepdims=True)
-        safe_norms = np.where(norms == 0.0, 1.0, norms)
-        self._normalized = (self.matrix / safe_norms).astype(np.float32)
+        norms = np.linalg.norm(self.matrix, axis=1)
+        safe_norms = np.where(norms == 0.0, 1.0, norms).astype(np.float32)
+        self._normalized = _NormalizedRows(self.matrix, safe_norms)
         return self._normalized

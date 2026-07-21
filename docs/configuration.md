@@ -58,7 +58,18 @@ pipeline run. Notable fields and derived paths:
 - `ollama_*` / `ollama_embed_*` — naming and embedding endpoints, models, and
   health timeouts (plus test-only injectable health checks).
 - `keep_embedding_generations` — how many published generations' embedding
-  shards to keep on disk (older ones are GC'd at publish time).
+  shards to keep on disk (older ones are GC'd at publish time). Default: `2`.
+- `keep_structural_generations` — how many structural generation directories
+  (`global-graph.json` + `cross-project-overlay.json` + `lexical-index.json`,
+  tens to 100+ MB each) to keep under `<global_dir>/generations/`.
+  Default: `2`. GC semantics: pruning runs only **after** `flip_current`
+  succeeds (`publish.prune_old_generations`) — it keeps the generation
+  `current` points at plus the most recent complete generations up to the
+  keep count, and also removes never-published generation dirs left behind
+  by a crash (a dangling `*.tmp` file with no matching `.json`). The
+  `current` generation is never removed, even when it is older than the
+  keep window. A crash during pruning can strand extra generation dirs
+  (wasted disk) but can never remove the generation `current` needs.
 - `extract_concurrency` — max concurrent per-repo `graphify extract`/`update`
   children on the bounded thread pool (default 2, hard floor 1). Every
   child's RSS lands in the same cgroup `MemoryMax` as the parent sync
@@ -128,3 +139,14 @@ Top level is `{ "relations": [ ... ] }`. Each relation has:
 | `source`, `target` | A logical ref: `{ repo, source_file, qualified_label, signature? }`. Both must resolve against the current generation's per-repo graphs at load time — a dangling reference is a hard error. |
 | `confidence` | Optional number in `[0, 1]`. |
 | `evidence` | Optional human-readable justification string. |
+
+## `generation-manifest.json`
+
+Written by the sync pipeline into every generation directory
+(`<global_dir>/generations/<generation_id>/generation-manifest.json`) at
+publish time, alongside `global-graph.json`, `cross-project-overlay.json`,
+and `lexical-index.json`. Notable field:
+
+| Field | Meaning |
+|-------|---------|
+| `artifact_sha256` | Map of `{"<artifact filename>": "<sha256 hex of the raw file bytes>"}` for the artifacts in the same generation directory. Written at publish time; the server uses it for cheap consistency verification of a generation (hash the raw bytes of each listed artifact and compare), falling back to the legacy canonical hash for older generations whose manifest predates this field. |

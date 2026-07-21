@@ -227,7 +227,12 @@ def run_naming(
     # Overwrite this run's graph, but leave any pre-existing
     # .graphify_labels.json / .sig from a prior run in place — that is
     # exactly what makes sig-gated label reuse possible across runs.
-    graph_path.write_text(json.dumps(merged_graph_data), encoding="utf-8")
+    # Streamed json.dump — never materializes the multi-MB serialized graph
+    # as one string. Direct (non-atomic) overwrite preserves the previous
+    # semantics here: the fingerprint sidecar was already unlinked above, so
+    # a crash mid-write can never be mistaken for a reusable named graph.
+    with graph_path.open("w", encoding="utf-8") as fh:
+        json.dump(merged_graph_data, fh)
 
     labels_path = out_dir / ".graphify_labels.json"
     sig_path = out_dir / ".graphify_labels.json.sig"
@@ -345,6 +350,12 @@ def restore_last_global_community_names(
     generation (`global-graph.json` behind `global/current`). A node with no
     entry there (new node, or first generation ever) stays unnamed rather
     than inventing a name from nothing.
+
+    Mutates `graph_data` in place and returns the same object — same
+    rationale as `strip_project_community_attrs`: the merged graph is ~38K
+    nodes, and copying every node dict here while `previous_global_graph` is
+    also resident cost a whole extra graph's worth of peak RAM for nothing
+    (no caller uses the pre-restore dict afterwards, see pipeline.py).
     """
     if not previous_global_graph:
         return graph_data
@@ -355,16 +366,10 @@ def restore_last_global_community_names(
     }
     if not prev_names:
         return graph_data
-    restored = dict(graph_data)
-    nodes = []
     for node in graph_data.get("nodes", []):
         if not isinstance(node, dict):
-            nodes.append(node)
             continue
-        new_node = dict(node)
-        prior_name = prev_names.get(new_node.get("id"))
+        prior_name = prev_names.get(node.get("id"))
         if prior_name:
-            new_node["community_name"] = prior_name
-        nodes.append(new_node)
-    restored["nodes"] = nodes
-    return restored
+            node["community_name"] = prior_name
+    return graph_data

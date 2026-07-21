@@ -41,9 +41,29 @@ class ScopeDecision:
     repo_ids: frozenset[str] | None  # None means "all" (no repo filter)
 
 
+# Parsed-registry cache keyed per path on (st_mtime_ns, st_size, st_ino):
+# registry.json is consulted on EVERY tool call, and re-reading + re-parsing +
+# Path.resolve() per call is pure waste when the file has not changed. mtime
+# alone is NOT a safe key — mtime-preserving overwrites (rsync -t, cp -p,
+# tar extraction) would keep serving stale scope authorization — so size and
+# inode are part of the signature too. A missing/unreadable registry is never
+# cached, so the fail-closed behavior (no entries -> ScopeResolutionError
+# downstream) is preserved and recovers the instant the file (re)appears.
+_registry_cache: dict[str, tuple[tuple[int, int, int], list[RegistryEntry]]] = {}
+
+
 def load_registry_entries(registry_path: Path) -> list[RegistryEntry]:
     if not registry_path.is_file():
         return []
+    try:
+        st = registry_path.stat()
+    except OSError:
+        return []
+    signature = (st.st_mtime_ns, st.st_size, st.st_ino)
+    cache_key = str(registry_path)
+    cached = _registry_cache.get(cache_key)
+    if cached is not None and cached[0] == signature:
+        return cached[1]
     data = json.loads(registry_path.read_text(encoding="utf-8"))
     disabled = set(data.get("disabled", []))
     entries = []
@@ -57,6 +77,7 @@ def load_registry_entries(registry_path: Path) -> list[RegistryEntry]:
                 enabled=bool(repo.get("enabled", True)) and repo["repo_id"] not in disabled,
             )
         )
+    _registry_cache[cache_key] = (signature, entries)
     return entries
 
 

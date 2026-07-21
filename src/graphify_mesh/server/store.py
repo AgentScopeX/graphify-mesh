@@ -25,6 +25,7 @@ generation state below.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -95,10 +96,71 @@ class Generation:
         return len(self.adjacency.get(node_id, []))
 
 
-def validate_manifest_consistency(manifest: dict, graph: dict, lexical: dict) -> list[str]:
+# Artifact files covered by the manifest's optional `artifact_sha256` map
+# (raw-file-bytes sha256 hexdigests, written by the sync pipeline). When the
+# map is present, verification is a single streaming pass over each file's
+# bytes — no JSON re-serialization of the whole graph per process spawn.
+_HASHED_ARTIFACT_NAMES = (
+    "global-graph.json",
+    "cross-project-overlay.json",
+    "lexical-index.json",
+)
+
+
+def _sha256_file(path: Path) -> str | None:
+    h = hashlib.sha256()
+    try:
+        with path.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                h.update(chunk)
+    except OSError:
+        return None
+    return h.hexdigest()
+
+
+def _artifact_hash_errors(expected_by_name: dict, generation_dir: Path) -> list[str]:
+    """Verify `artifact_sha256` entries against the raw bytes of each artifact
+    file in `generation_dir`. Once the manifest carries the map at all, every
+    hashed artifact PRESENT on disk must have an entry — a partial (or empty)
+    map is a consistency error, never a silent verification skip. Artifacts
+    absent on disk are skipped here (absence has its own dedicated handling —
+    missing graph is a hard reject, missing lexical is the documented
+    degraded mode)."""
+    errors: list[str] = []
+    for name in _HASHED_ARTIFACT_NAMES:
+        path = generation_dir / name
+        if not path.is_file():
+            continue
+        expected = expected_by_name.get(name)
+        if not isinstance(expected, str):
+            errors.append(
+                f"{name}: present on disk but has no artifact_sha256 entry in the "
+                "manifest — refusing unverifiable artifact"
+            )
+            continue
+        actual = _sha256_file(path)
+        if actual is None:
+            errors.append(f"{name}: unreadable while verifying manifest artifact_sha256")
+            continue
+        if actual != expected:
+            errors.append(
+                f"{name}: artifact_sha256 mismatch — raw file bytes do not match the "
+                "manifest (generation artifacts may be mixed or corrupt)"
+            )
+    return errors
+
+
+def validate_manifest_consistency(
+    manifest: dict, graph: dict, lexical: dict, generation_dir: Path | None = None
+) -> list[str]:
     """C28: hard consistency gate. Returns a list of errors; empty = ok.
     Reuses `graphify_mesh.sync.validate.validate_generation_manifest` for the
-    required-keys check rather than re-deriving that list here."""
+    required-keys check rather than re-deriving that list here.
+
+    `generation_dir` (the pinned realpath of the generation directory)
+    enables the fast `artifact_sha256` raw-bytes verification path for
+    manifests that carry that map; older generations without the key fall
+    back to the legacy `output_hash` re-serialization check unchanged."""
     errors: list[str] = list(validate_generation_manifest(manifest).errors)
 
     expected_nodes = manifest.get("output_node_count")
@@ -116,11 +178,27 @@ def validate_manifest_consistency(manifest: dict, graph: dict, lexical: dict) ->
             f"but graph has {actual_edges} edges"
         )
 
-    expected_hash = manifest.get("output_hash")
-    if expected_hash is not None and expected_hash != output_hash(graph):
-        errors.append(
-            "generation-manifest: output_hash does not match recomputed hash of global-graph.json"
-        )
+    artifact_hashes = manifest.get("artifact_sha256")
+    graph_bytes_verified = False
+    if isinstance(artifact_hashes, dict) and generation_dir is not None:
+        errors.extend(_artifact_hash_errors(artifact_hashes, generation_dir))
+        # The legacy output_hash check may be skipped only when the graph
+        # itself is actually covered by a raw-bytes hash entry — an
+        # artifact_sha256 map that omits global-graph.json (partial/empty
+        # map) must not disable the only remaining integrity check on the
+        # graph.
+        graph_bytes_verified = isinstance(artifact_hashes.get("global-graph.json"), str)
+    if not graph_bytes_verified:
+        # Legacy path (generations published before `artifact_sha256`
+        # existed, callers with no on-disk directory to hash, or a map that
+        # does not cover the graph): recompute the canonical-JSON
+        # output_hash of the parsed graph.
+        expected_hash = manifest.get("output_hash")
+        if expected_hash is not None and expected_hash != output_hash(graph):
+            errors.append(
+                "generation-manifest: output_hash does not match recomputed hash "
+                "of global-graph.json"
+            )
 
     manifest_tok = manifest.get("lexical_index_tokenizer_version")
     lexical_tok = lexical.get("tokenizer_version") if isinstance(lexical, dict) else None
@@ -384,10 +462,15 @@ class GenerationStore:
         self._try_reload(target, mtime)
 
     def _try_reload(self, target: str, mtime: float | None) -> None:
-        current = self.config.current_symlink
-        manifest = _read_json(current / "generation-manifest.json")
-        graph = _read_json(current / "global-graph.json")
-        overlay = _read_json(current / "cross-project-overlay.json") or {"edges": []}
+        # Every artifact read goes through the CAPTURED realpath (`target`),
+        # never the live `current` symlink: a sync publish flipping `current`
+        # mid-load must not mix files from two generations into one
+        # in-memory Generation.
+        gen_dir = Path(target)
+        manifest = _read_json(gen_dir / "generation-manifest.json")
+        graph = _read_json(gen_dir / "global-graph.json")
+        overlay_raw = _read_json(gen_dir / "cross-project-overlay.json")
+        overlay = overlay_raw if isinstance(overlay_raw, dict) else {"edges": []}
 
         # `_read_json` conflates "file missing" and "file present but
         # unparseable" into the same `None` — both are NOT the same state
@@ -397,7 +480,7 @@ class GenerationStore:
         # corrupt (unparseable JSON, or parseable but not an object) is a
         # real artifact problem and must be surfaced as a validation error
         # alongside `validate_manifest_consistency`'s own errors.
-        lexical_path = current / "lexical-index.json"
+        lexical_path = gen_dir / "lexical-index.json"
         lexical_raw = _read_json(lexical_path)
         lexical_error: str | None = None
         if lexical_raw is None and lexical_path.is_file():
@@ -414,7 +497,7 @@ class GenerationStore:
 
         if manifest is None or graph is None:
             log.warning(
-                "graphify-mesh: reload skipped — manifest or graph unreadable at %s", current
+                "graphify-mesh: reload skipped — manifest or graph unreadable at %s", gen_dir
             )
             # Always surface the rejection in `degraded`, even when a
             # previously-loaded generation keeps serving (see module
@@ -424,9 +507,22 @@ class GenerationStore:
             self.degraded = ["reload_failed_unreadable_artifacts"]
             return
 
-        errors = validate_manifest_consistency(manifest, graph, lexical)
+        errors = validate_manifest_consistency(manifest, graph, lexical, gen_dir)
         if lexical_error is not None:
             errors.append(lexical_error)
+        # Generation-id cross-check: the overlay artifact stamps the
+        # generation_id it was built for (`sync.overlay.overlay_artifact`).
+        # A mismatch means the directory holds artifacts from two different
+        # generations — reject, exactly like any other consistency failure.
+        # Overlays without the stamp (older/synthetic generations) pass.
+        overlay_generation = overlay.get("generation_id")
+        manifest_generation = manifest.get("generation_id")
+        if overlay_generation is not None and overlay_generation != manifest_generation:
+            errors.append(
+                f"cross-project-overlay: generation_id={overlay_generation!r} does not "
+                f"match manifest generation_id={manifest_generation!r} — "
+                "mixed-generation artifacts"
+            )
         if errors:
             log.warning(
                 "graphify-mesh: rejecting inconsistent generation %s (%d errors): %s",
@@ -444,7 +540,7 @@ class GenerationStore:
             # anything), never swap in the inconsistent one.
             return
 
-        embeddings = _load_embeddings(self.config.embeddings_current_symlink)
+        embeddings, embedding_markers = self._load_embeddings_checked(str(manifest_generation))
         generation = Generation(
             generation_id=manifest["generation_id"],
             manifest=manifest,
@@ -457,7 +553,55 @@ class GenerationStore:
         self._generation = generation
         self._current_target = target
         self._manifest_mtime = mtime
-        self.degraded = [] if embeddings else ["embeddings_unavailable"]
+        degraded: list[str] = []
+        if not embeddings:
+            degraded.append("embeddings_unavailable")
+        for marker in embedding_markers:
+            if marker not in degraded:
+                degraded.append(marker)
+        self.degraded = degraded
+
+    def _load_embeddings_checked(
+        self, manifest_generation_id: str
+    ) -> tuple[dict[str, RepoVectors], list[str]]:
+        """Resolve `embeddings/current` to its realpath ONCE, load shards from
+        that pinned directory (never through the live symlink), and
+        cross-check its generation stamp against the manifest.
+
+        The only generation stamp the current embeddings on-disk format
+        carries is the published directory name itself
+        (`<embeddings_dir>/generations/<generation_id>/`, flipped by
+        `sync.embedding.persist_generation` with the SAME generation_id as
+        the graph generation); shard files and id-map.json have no in-file
+        whole-generation stamp. A stamp mismatch fails SOFT — embeddings are
+        dropped and a degraded marker is surfaced — because missing
+        embeddings is the documented degraded mode (vector channel drops
+        out, lexical/structural still serve), not a reason to reject an
+        otherwise-consistent generation. A layout with no stamp to check
+        (legacy/non-`generations/` publish) also fails soft, with an
+        `embeddings_generation_unverified` marker."""
+        link = self.config.embeddings_current_symlink
+        if not link.exists():
+            return {}, []
+        emb_dir = Path(os.path.realpath(link))
+        if not emb_dir.is_dir():
+            return {}, []
+        has_stamp = emb_dir.parent.name == "generations"
+        if not has_stamp:
+            embeddings = _load_embeddings(emb_dir)
+            if not embeddings:
+                return {}, []
+            return embeddings, ["embeddings_generation_unverified"]
+        stamp = emb_dir.name
+        if stamp != manifest_generation_id:
+            log.warning(
+                "embeddings: published embeddings generation %r does not match manifest "
+                "generation_id %r — dropping the vector channel for this generation",
+                stamp,
+                manifest_generation_id,
+            )
+            return {}, ["embeddings_generation_mismatch"]
+        return _load_embeddings(emb_dir), []
 
     @property
     def generation(self) -> Generation:

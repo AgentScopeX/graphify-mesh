@@ -52,9 +52,7 @@ LSH_SEED = 1337
 BUCKET_CHUNK_ROWS = 1024
 
 
-def cosine_similarity(
-    a: list[float] | np.ndarray, b: list[float] | np.ndarray
-) -> float:
+def cosine_similarity(a: list[float] | np.ndarray, b: list[float] | np.ndarray) -> float:
     # Mixed-dimension vectors (e.g. a shard embedded under two different
     # models) carry no comparable signal — score them 0 instead of raising.
     if len(a) != len(b):
@@ -181,10 +179,7 @@ def mutual_top_k_pairs(
         # Gather normalized rows for this bucket only, from each repo's
         # cached normalized() matrix — the only allocation is bucket-sized.
         sub = np.stack(
-            [
-                vectors_by_repo[row_refs[r][0]].normalized()[row_refs[r][1]]
-                for r in bucket_rows
-            ]
+            [vectors_by_repo[row_refs[r][0]].normalized()[row_refs[r][1]] for r in bucket_rows]
         )
         for chunk_start in range(0, len(bucket_rows), BUCKET_CHUNK_ROWS):
             chunk_end = min(chunk_start + BUCKET_CHUNK_ROWS, len(bucket_rows))
