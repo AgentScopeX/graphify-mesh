@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 import urllib.parse
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -166,6 +166,110 @@ def _extract_concurrency_from_env(name: str, default: int) -> int:
     return value
 
 
+# Multi-root, configurable-depth discovery (WS discovery generalization).
+# depth = max nesting of the *project dir* below a scan root; depth 2 is
+# today's pre-existing behavior (root/a/graphify-out and root/a/b/graphify-out).
+SCAN_DEFAULT_DEPTH = 4
+# Hard floor: 1 = only immediate children of a scan root are candidate
+# project dirs. Bad env/CLI input degrades to this floor rather than
+# raising, same policy as EXTRACT_MIN_CONCURRENCY.
+SCAN_MIN_DEPTH = 1
+# Hard ceiling: an unbounded depth turns one typo'd env var / CLI flag into
+# an effectively-unbounded filesystem walk. 8 levels below a scan root is
+# far beyond any real project layout observed so far; a request for more is
+# almost certainly a mistake, not a real deployment need. Bad env/CLI input
+# above this degrades to the ceiling rather than raising, same policy as the
+# floor above.
+SCAN_MAX_DEPTH = 8
+
+
+def _scan_depth_from_env(name: str, default: int) -> int:
+    """Parse GRAPHIFY_MESH_SCAN_DEPTH. Unset -> default; unparsable or below
+    SCAN_MIN_DEPTH -> the hard floor; above SCAN_MAX_DEPTH -> the hard
+    ceiling — degrade, never raise, same policy as
+    _extract_concurrency_from_env."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return SCAN_MIN_DEPTH
+    if value < SCAN_MIN_DEPTH:
+        return SCAN_MIN_DEPTH
+    if value > SCAN_MAX_DEPTH:
+        return SCAN_MAX_DEPTH
+    return value
+
+
+def _split_colon_list(raw: str) -> list[str]:
+    """Split a colon-separated root list, strip each segment, and drop
+    empty/whitespace-only segments. Shared normalization for
+    GRAPHIFY_MESH_SCAN_ROOTS and GRAPHIFY_MESH_APPROVED_ROOTS."""
+    return [segment.strip() for segment in raw.split(":") if segment.strip()]
+
+
+def _clean_root_args(items: Sequence[str | Path]) -> list[str]:
+    """Strip and drop empty/whitespace-only elements from an explicit root
+    list (e.g. repeated --scan-root values). Shares the same
+    empty-value-is-unset policy as the env-var parsers below, so a stray
+    `--scan-root ""` is dropped rather than silently resolving to cwd."""
+    return [str(item).strip() for item in items if str(item).strip()]
+
+
+def _scan_roots_from_env(scan_roots: Sequence[str | Path] | None) -> list[Path]:
+    """Resolve the ordered list of scan roots.
+
+    Precedence:
+      1. explicit `scan_roots` arg (from CLI) if non-None and, after
+         dropping empty/whitespace-only elements, still non-empty.
+      2. GRAPHIFY_MESH_SCAN_ROOTS env: colon-split, strip each segment, drop
+         empty segments; if set but splits to zero usable segments (e.g.
+         ":::"), fall through to the next source.
+      3. GRAPHIFY_MESH_SCAN_ROOT env (single path, back-compat); stripped,
+         with whitespace-only treated as unset (falls through).
+      4. Path.cwd() — the package's original, portable default.
+
+    Every element is returned as `Path(p).resolve()`.
+    """
+    if scan_roots:
+        cleaned_args = _clean_root_args(scan_roots)
+        if cleaned_args:
+            return [Path(item).resolve() for item in cleaned_args]
+
+    raw_roots = os.environ.get("GRAPHIFY_MESH_SCAN_ROOTS")
+    if raw_roots is not None:
+        usable = _split_colon_list(raw_roots)
+        if usable:
+            return [Path(item).resolve() for item in usable]
+
+    raw_root = os.environ.get("GRAPHIFY_MESH_SCAN_ROOT")
+    if raw_root is not None:
+        stripped_root = raw_root.strip()
+        if stripped_root:
+            return [Path(stripped_root).resolve()]
+
+    return [Path.cwd().resolve()]
+
+
+def _approved_roots_from_env(scan_roots: Sequence[Path]) -> list[Path]:
+    """Resolve the ordered list of approved roots, independently of
+    scan_roots.
+
+    GRAPHIFY_MESH_APPROVED_ROOTS: same colon-split/strip/drop-empty
+    normalization as GRAPHIFY_MESH_SCAN_ROOTS (see `_split_colon_list`).
+    When unset, or set but splitting to zero usable segments: approved_roots
+    defaults to `list(scan_roots)` — the coupling that was the only
+    behavior before this env var existed.
+    """
+    raw = os.environ.get("GRAPHIFY_MESH_APPROVED_ROOTS")
+    if raw is not None:
+        usable = _split_colon_list(raw)
+        if usable:
+            return [Path(item).resolve() for item in usable]
+    return list(scan_roots)
+
+
 # File extension -> source category, for manifest-diff decisions (WS1 item 2).
 # dict-dispatch instead of if/elif chains per project code style.
 CODE_EXTENSIONS = frozenset(
@@ -207,6 +311,11 @@ SEMANTIC_EXTENSIONS = frozenset(
     }
 )
 IGNORED_DIR_NAMES = frozenset(
+    # Second consumer beyond file-categorization: sync/discovery.py's
+    # `_iter_candidate_dirs` also prunes the filesystem walk on this same
+    # set (skips descending into any dir whose name is listed here). Adding
+    # a name for file-categorization reasons alone will silently change
+    # which project dirs discovery can reach — check both call sites.
     {
         ".git",
         "node_modules",
@@ -242,8 +351,8 @@ class Settings:
     """Resolved runtime configuration for one pipeline run."""
 
     mesh_root: Path
-    scan_root: Path
-    approved_root: Path
+    scan_roots: list[Path]
+    approved_roots: list[Path]
     registry_path: Path
     graphify_bin: str = field(default_factory=lambda: os.environ.get("GRAPHIFY_BIN", "graphify"))
     stale_threshold: float = STALE_PUBLISH_THRESHOLD
@@ -306,6 +415,22 @@ class Settings:
             "GRAPHIFY_MESH_EXTRACT_CONCURRENCY", EXTRACT_DEFAULT_CONCURRENCY
         )
     )
+
+    # Multi-root discovery depth: max nesting of the project dir below a
+    # scan root (see SCAN_DEFAULT_DEPTH docstring above).
+    scan_depth: int = field(
+        default_factory=lambda: _scan_depth_from_env("GRAPHIFY_MESH_SCAN_DEPTH", SCAN_DEFAULT_DEPTH)
+    )
+
+    def __post_init__(self) -> None:
+        # _scan_depth_from_env already clamps the env/CLI path; direct
+        # construction (tests, or any other caller building Settings(...) by
+        # hand) bypasses that function entirely, so re-enforce the same
+        # [SCAN_MIN_DEPTH, SCAN_MAX_DEPTH] invariant here.
+        if self.scan_depth < SCAN_MIN_DEPTH:
+            self.scan_depth = SCAN_MIN_DEPTH
+        if self.scan_depth > SCAN_MAX_DEPTH:
+            self.scan_depth = SCAN_MAX_DEPTH
 
     @property
     def global_dir(self) -> Path:
@@ -375,20 +500,27 @@ class Settings:
     def from_env(
         cls,
         mesh_root: Path | None = None,
-        scan_root: Path | None = None,
+        scan_roots: Sequence[str | Path] | None = None,
         registry_path: Path | None = None,
         **overrides,
     ) -> Settings:
-        # No machine-specific defaults: mesh_root/scan_root default to the
-        # current working directory so the package is portable. Set them
-        # explicitly (CLI flags or GRAPHIFY_MESH_ROOT / GRAPHIFY_MESH_SCAN_ROOT)
-        # for a real deployment.
+        # No machine-specific defaults: mesh_root and scan_roots both default
+        # to the current working directory so the package is portable. Set
+        # them explicitly (CLI flags or GRAPHIFY_MESH_ROOT /
+        # GRAPHIFY_MESH_SCAN_ROOTS / GRAPHIFY_MESH_SCAN_ROOT) for a real
+        # deployment — /var/www/ or any other host-specific path belongs in
+        # deployment config (systemd unit, wrapper script, etc.), not here.
+        #
+        # approved_roots defaults to scan_roots (the coupling this package
+        # always had) but can be set independently via
+        # GRAPHIFY_MESH_APPROVED_ROOTS when a deployment needs to scan a
+        # narrower tree than it trusts discovered symlink targets to resolve
+        # into.
         resolved_mesh_root = Path(
             mesh_root or os.environ.get("GRAPHIFY_MESH_ROOT") or Path.cwd()
         ).resolve()
-        resolved_scan_root = Path(
-            scan_root or os.environ.get("GRAPHIFY_MESH_SCAN_ROOT") or Path.cwd()
-        ).resolve()
+        resolved_scan_roots = _scan_roots_from_env(scan_roots)
+        resolved_approved_roots = _approved_roots_from_env(resolved_scan_roots)
         resolved_registry = Path(
             registry_path
             or os.environ.get(
@@ -397,8 +529,8 @@ class Settings:
         ).resolve()
         return cls(
             mesh_root=resolved_mesh_root,
-            scan_root=resolved_scan_root,
-            approved_root=resolved_scan_root,
+            scan_roots=resolved_scan_roots,
+            approved_roots=resolved_approved_roots,
             registry_path=resolved_registry,
             **overrides,
         )

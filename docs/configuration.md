@@ -19,7 +19,10 @@ keep their upstream names: `GRAPHIFY_BIN` and `GRAPHIFY_NO_BACKUP`.
 | Variable | Used by | Default | Meaning |
 |----------|---------|---------|---------|
 | `GRAPHIFY_MESH_ROOT` | sync + server | current working directory | Root that contains the `graphify/global/` tree this engine publishes into and serves from. |
-| `GRAPHIFY_MESH_SCAN_ROOT` | sync | current working directory | Root scanned for per-repo `graphify-out` symlinks; also the "approved root" for the symlink-traversal guard. |
+| `GRAPHIFY_MESH_SCAN_ROOTS` | sync | current working directory | Colon-separated roots scanned for per-repo `graphify-out` symlinks/directories. Segments are stripped and empty segments dropped; if no usable segments remain, resolution falls through to `GRAPHIFY_MESH_SCAN_ROOT`, then the current working directory. |
+| `GRAPHIFY_MESH_SCAN_ROOT` | sync | (unset) | Legacy single-path form, still honored after `GRAPHIFY_MESH_SCAN_ROOTS` for backward compatibility. A whitespace-only value is treated as unset; the final fallback is the current working directory. |
+| `GRAPHIFY_MESH_APPROVED_ROOTS` | sync | resolved scan roots | Colon-separated roots trusted by the discovery path-traversal guard. Uses the same strip-and-drop-empty normalization as `GRAPHIFY_MESH_SCAN_ROOTS`; unset or empty means the resolved scan roots. |
+| `GRAPHIFY_MESH_SCAN_DEPTH` | sync | `4` | Maximum nesting of a project directory below each scan root. Values below `1` or unparsable values degrade to `1`; values above `8` degrade to `8` rather than raising. |
 | `GRAPHIFY_MESH_REGISTRY` | sync + server | `<root>/bin/registry.json` | Path to `registry.json`. |
 | `GRAPHIFY_MESH_OLLAMA_BASE_URL` | sync (naming) | `http://localhost:11434/v1` | OpenAI-compatible `/v1` endpoint for the community-labeling LLM. |
 | `GRAPHIFY_MESH_OLLAMA_API_KEY` | sync (naming) | `dummy` | API key sent to the `/v1` endpoint (Ollama ignores it, but the client requires one). |
@@ -39,7 +42,8 @@ keep their upstream names: `GRAPHIFY_BIN` and `GRAPHIFY_NO_BACKUP`.
 | `--once` | Single run (the only supported mode; there is no daemon loop). |
 | `--dry-run` | Print every action; write nothing outside a private staging dir. |
 | `--mesh-root PATH` | Override `GRAPHIFY_MESH_ROOT`. |
-| `--scan-root PATH` | Override `GRAPHIFY_MESH_SCAN_ROOT`. |
+| `--scan-root PATH` | Add a scan root; repeat the flag for multiple roots. Explicit CLI roots take precedence over `GRAPHIFY_MESH_SCAN_ROOTS`, then legacy `GRAPHIFY_MESH_SCAN_ROOT`, then the current working directory. If every `--scan-root` value given is empty or whitespace-only, they are dropped and resolution falls through to `GRAPHIFY_MESH_SCAN_ROOTS`/`GRAPHIFY_MESH_SCAN_ROOT`/cwd exactly as if no `--scan-root` had been passed. |
+| `--scan-depth N` | Override `GRAPHIFY_MESH_SCAN_DEPTH`; values are clamped to `1`–`8`. |
 | `--registry PATH` | Override `GRAPHIFY_MESH_REGISTRY`. |
 | `--skip-labeling` / `--no-skip-labeling` | Skip / enforce the non-placeholder community-name check. |
 | `--skip-embedding` | Log-skip the embedding stage. |
@@ -47,12 +51,57 @@ keep their upstream names: `GRAPHIFY_BIN` and `GRAPHIFY_NO_BACKUP`.
 | `--extract-concurrency N` | Override `GRAPHIFY_MESH_EXTRACT_CONCURRENCY` (default 2, floor 1). |
 | `-v`, `--verbose` | Debug logging. |
 
+## Discovery behavior
+
+Scan depth is the maximum nesting of the **project directory** below a scan
+root: depth `1` checks immediate child directories, while the old fixed scan
+was equivalent to depth `2`. Discovery walks each root in sorted DFS preorder.
+Hidden directories and directories named in `IGNORED_DIR_NAMES` (including
+`.git`, `node_modules`, `vendor`, `dist`, and `build`) are pruned completely,
+so projects at or below those names are not discoverable — this is a
+behavior change from the old fixed-depth-2 scan, not a security measure.
+Separately, directory symlinks are not followed during the walk, so a
+symlinked project directory is not discovered; that restriction **is**
+deliberate security hardening (a symlinked project dir could otherwise be
+used to escape the scanned tree).
+
+Multiple roots are scanned in their configured order. Overlapping or nested
+roots share a depth-budget-aware visited set so subtrees are not walked
+redundantly, while repeated links are still returned for duplicate reporting
+and reconciliation. Per-walk and per-candidate OS errors are logged and
+skipped without aborting the remaining discovery run. Both a candidate project
+directory and its resolved `graphify-out` target must resolve under at least
+one approved root or the candidate is rejected and reported. When multiple
+discovered links resolve to one registered repo, reconciliation prefers the
+link whose project directory matches the already-registered root.
+
+Each scan root that reaches the walk (i.e. it resolved, is a directory, and
+was not already covered by a prior root at equal or greater depth) logs its
+own summary line with its candidate-dir count and discovered-link count;
+roots that fail to resolve/stat, aren't a directory, or are already covered
+are logged with a warning and skipped before that summary is ever produced. Of
+the roots that do get a summary: a root that yields zero candidate
+directories logs a warning (an empty or fully-pruned tree); a root that has
+candidates but discovers zero `graphify-out` links logs a separate warning —
+this can mean none of the candidates were actually graphify projects, but it
+can equally mean per-candidate filesystem errors (each individually logged
+and skipped, e.g. a race with a live tree) silently ate what would otherwise
+have been valid links. The warnings catch different misconfiguration cases
+and are not mutually exclusive with a successful run
+on other roots.
+
 ## `Settings` fields (sync)
 
 `graphify_mesh.sync.config.Settings` — resolved runtime configuration for one
 pipeline run. Notable fields and derived paths:
 
-- `mesh_root`, `scan_root`, `approved_root`, `registry_path` — base locations.
+- `mesh_root`, `registry_path` — base locations.
+- `scan_roots: list[Path]`, `approved_roots: list[Path]` — ordered discovery
+  roots and roots trusted by the path-traversal guard. These replace the old
+  singular `scan_root` and `approved_root` fields.
+- `scan_depth: int` — maximum project-directory nesting below each scan root;
+  defaults to `4` and is clamped to `1`–`8`, including when `Settings` is
+  constructed directly instead of through the environment parser.
 - `graphify_bin`, `stale_threshold`, `dry_run`, `skip_labeling`,
   `skip_embedding`, `allow_shrink` — run behavior.
 - `ollama_*` / `ollama_embed_*` — naming and embedding endpoints, models, and
@@ -124,6 +173,13 @@ Source of truth for which repos are in the mesh. See
 | `repos[].enabled` | If `false`, the repo is skipped. |
 | `disabled` | List of `repo_id`s to force-disable. |
 | `external_roots` | Additional approved roots for symlink resolution. |
+
+`GRAPHIFY_MESH_APPROVED_ROOTS` (the `Settings.approved_roots` value) supplies
+the discovery guard's approved roots and defaults to the scan roots.
+`registry.json`'s `external_roots` extends the same containment policy for
+registry-declared `collection_path` values that legitimately live elsewhere;
+use the environment variable for discovered project/link locations and this
+registry field for additional registered collection locations.
 
 ## `manual-relations.json`
 

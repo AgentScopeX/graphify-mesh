@@ -62,9 +62,9 @@ The exact URL scheme is:
 ## 3. Point `graphify` at each repo
 
 For every repo you want in the mesh, run `graphify` once so it produces a
-`graphify-out/graph.json`, and make sure that output is reachable from a single
-scan root (a `graphify-out` symlink per checkout is the convention). Example
-layout:
+`graphify-out/graph.json`, and make sure that output is reachable from one of
+your scan roots (a `graphify-out` symlink per checkout is the convention).
+Example layout:
 
 ```
 /path/to/your/workspace/checkouts/
@@ -94,7 +94,9 @@ directory — safe to run anywhere:
 ```bash
 graphify-mesh-sync --once --dry-run \
   --mesh-root  /path/to/your/workspace/graph-mesh \
-  --scan-root  /path/to/your/workspace/checkouts
+  --scan-root  /path/to/your/workspace/checkouts \
+  --scan-root  /path/to/your/workspace/other-checkouts \
+  --scan-depth 4
 ```
 
 Review the JSON report: `reconciliation`, `project_actions`, `stale_repos`,
@@ -105,7 +107,9 @@ Review the JSON report: `reconciliation`, `project_actions`, `stale_repos`,
 ```bash
 graphify-mesh-sync --once \
   --mesh-root  /path/to/your/workspace/graph-mesh \
-  --scan-root  /path/to/your/workspace/checkouts
+  --scan-root  /path/to/your/workspace/checkouts \
+  --scan-root  /path/to/your/workspace/other-checkouts \
+  --scan-depth 4
 ```
 
 On success this publishes a new immutable generation and flips

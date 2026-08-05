@@ -223,14 +223,20 @@ def _run_locked(settings: Settings, staging_root: Path) -> RunReport:
     # get flagged stale by readers. `created_at` stays the publish stamp.
     sync_started_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     tracker = rss.StageRssTracker()
-    log.info("discovery: scanning %s ...", settings.scan_root)
-    discovered = discover_filesystem(settings.scan_root, settings.approved_root)
+    log.info(
+        "discovery: scanning %s (depth %d) ...",
+        ", ".join(map(str, settings.scan_roots)),
+        settings.scan_depth,
+    )
+    discovered = discover_filesystem(
+        settings.scan_roots, settings.approved_roots, settings.scan_depth
+    )
     registry = load_registry(settings.registry_path)
     # Hard error (never a degrade) if any enabled registry entry's
-    # collection_path escapes the approved root — same containment rule the
+    # collection_path escapes the approved roots — same containment rule the
     # discovery symlink guard enforces, applied at the point where
-    # approved_root is known.
-    assert_registry_containment(registry, settings.approved_root)
+    # approved_roots is known.
+    assert_registry_containment(registry, settings.approved_roots)
     reconciliation = reconcile(discovered, registry, settings.mesh_root)
     report = RunReport(dry_run=settings.dry_run, reconciliation=reconciliation.to_dict())
     log.info(

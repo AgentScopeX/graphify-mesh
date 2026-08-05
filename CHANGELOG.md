@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+### Features and behavior changes
+
+- Added: filesystem discovery supports multiple ordered scan roots and a
+  configurable project-directory nesting depth (default `4`, clamped to
+  `1`–`8`). `--scan-root` is repeatable, `--scan-depth` sets the depth,
+  `GRAPHIFY_MESH_SCAN_ROOTS` accepts a normalized colon-separated root list,
+  `GRAPHIFY_MESH_APPROVED_ROOTS` configures trusted discovery roots, and
+  `GRAPHIFY_MESH_SCAN_DEPTH` configures the depth. The legacy single-path
+  `GRAPHIFY_MESH_SCAN_ROOT` remains a fallback; with no configured root,
+  discovery still defaults to the current working directory.
+- Breaking: `Settings.scan_root` and `Settings.approved_root` were renamed to
+  `Settings.scan_roots` and `Settings.approved_roots` and now hold
+  `list[Path]`; there is no backward-compatibility shim. `Settings` also gains
+  `scan_depth`. `discover_filesystem` now takes plural `scan_roots` and
+  `approved_roots` arguments plus `depth`, so direct callers must update.
+- Changed: discovery now prunes hidden directories and directories named in
+  `IGNORED_DIR_NAMES`, so projects at or below names such as `vendor`,
+  `build`, `dist`, `node_modules`, and `.git` are no longer discoverable.
+  Directory symlinks are no longer followed during the discovery walk, so a
+  symlinked project directory is not discovered; this is security hardening.
+  Deeper scans may surface new `unregistered_discovered` or duplicate report
+  rows for reconciliation; these rows are report-only and are not errors.
+
 ## 0.0.6
 
 ### Performance

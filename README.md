@@ -112,12 +112,14 @@ $EDITOR /path/to/your/workspace/graph-mesh/bin/registry.json
 # 4. Dry run (writes nothing outside a private staging dir):
 graphify-mesh-sync --once --dry-run \
   --mesh-root /path/to/your/workspace/graph-mesh \
-  --scan-root /path/to/your/workspace/checkouts
+  --scan-root /path/to/your/workspace/checkouts \
+  --scan-root /path/to/your/workspace/other-checkouts
 
 # 5. Real run:
 graphify-mesh-sync --once \
   --mesh-root /path/to/your/workspace/graph-mesh \
-  --scan-root /path/to/your/workspace/checkouts
+  --scan-root /path/to/your/workspace/checkouts \
+  --scan-depth 4
 
 # 6. Register the MCP server with your MCP-capable client (stdio):
 #    command: graphify-mesh-server

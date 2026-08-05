@@ -13,7 +13,7 @@ manual `graphify-mesh-sync --once` run has published a generation.
 You never re-index anything by hand. Each `graphify-mesh-sync --once` run is a
 complete refresh cycle:
 
-1. **Discovery** re-scans the scan root for `graphify-out` symlinks and
+1. **Discovery** re-scans the configured scan roots for `graphify-out` links and
    reconciles them against `registry.json` — new repos are picked up, removed
    ones flagged as stale.
 2. **Per-project sync** diffs each repo's source digest against saved state
@@ -51,8 +51,13 @@ Set at minimum:
 ```dosini
 # Where the engine publishes graphify/global/<generation>/ trees.
 GRAPHIFY_MESH_ROOT=/path/to/your/workspace/graph-mesh
-# Root scanned for per-repo graphify-out symlinks (your checkouts).
-GRAPHIFY_MESH_SCAN_ROOT=/path/to/your/workspace/checkouts
+# Colon-separated roots scanned for per-repo graphify-out links.
+GRAPHIFY_MESH_SCAN_ROOTS=/path/to/your/workspace/checkouts:/path/to/your/workspace/other-checkouts
+# Optional; defaults to the resolved scan roots above (whether they came
+# from GRAPHIFY_MESH_SCAN_ROOTS, the legacy GRAPHIFY_MESH_SCAN_ROOT, or the
+# current working directory). The legacy single-path GRAPHIFY_MESH_SCAN_ROOT
+# remains supported as a fallback for scan roots too.
+GRAPHIFY_MESH_APPROVED_ROOTS=/path/to/your/workspace/checkouts:/path/to/your/workspace/other-checkouts
 # Defaults to <GRAPHIFY_MESH_ROOT>/bin/registry.json — set only if elsewhere.
 GRAPHIFY_MESH_REGISTRY=/path/to/your/workspace/graph-mesh/bin/registry.json
 ```
@@ -194,9 +199,9 @@ The schedule handles content changes automatically; membership changes need two
 manual touches:
 
 1. **Add a repo** — run `graphify` once in the new checkout so it has a
-   `graphify-out/graph.json` reachable under the scan root, then add its entry
-   (`repo_id`, `root`, `collection_path`, `enabled: true`) to `registry.json`.
-   The next scheduled run picks it up.
+   `graphify-out/graph.json` reachable under a configured scan root, then add
+   its entry (`repo_id`, `root`, `collection_path`, `enabled: true`) to
+   `registry.json`. The next scheduled run picks it up.
 2. **Remove a repo** — set `enabled: false` (or delete the entry) in
    `registry.json`. The next run will drop it — see the shrink guard below.
 
@@ -207,14 +212,15 @@ run.
 
 - **Run fails validation with a stale-repo / shrink error.** The validator
   refuses to publish a generation meaningfully smaller than the previous one,
-  as protection against accidentally wiping graphs (e.g. a scan root that
+  as protection against accidentally wiping graphs (e.g. scan roots that
   failed to mount). If the shrink is intentional — you really removed repos —
   authorize it once by hand:
 
   ```bash
   graphify-mesh-sync --once --allow-shrink \
     --mesh-root /path/to/your/workspace/graph-mesh \
-    --scan-root /path/to/your/workspace/checkouts
+    --scan-root /path/to/your/workspace/checkouts \
+    --scan-root /path/to/your/workspace/other-checkouts
   ```
 
   Do **not** put `--allow-shrink` in the scheduled unit; it would disable the
@@ -243,5 +249,6 @@ run.
   ```bash
   graphify-mesh-sync --once --dry-run \
     --mesh-root /path/to/your/workspace/graph-mesh \
-    --scan-root /path/to/your/workspace/checkouts
+    --scan-root /path/to/your/workspace/checkouts \
+    --scan-depth 4
   ```

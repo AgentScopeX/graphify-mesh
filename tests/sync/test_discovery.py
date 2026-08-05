@@ -16,7 +16,7 @@ def test_broken_symlink_reported_not_crashed(env):
     link.unlink()
     link.symlink_to(ghost, target_is_directory=True)
 
-    discovered = discover_filesystem(env.scan_root, env.scan_root)
+    discovered = discover_filesystem([env.scan_root], [env.scan_root])
     registry = load_registry(env.registry_path)
     report = reconcile(discovered, registry, env.mesh_root)
 
@@ -40,7 +40,7 @@ def test_duplicate_collection_two_registry_entries_same_path(env):
     )
     env.write_registry()
 
-    discovered = discover_filesystem(env.scan_root, env.scan_root)
+    discovered = discover_filesystem([env.scan_root], [env.scan_root])
     registry = load_registry(env.registry_path)
     report = reconcile(discovered, registry, env.mesh_root)
 
@@ -70,7 +70,7 @@ def test_duplicate_collection_two_discovered_symlinks_same_target(env):
     )
     env.write_registry()
 
-    discovered = discover_filesystem(env.scan_root, env.scan_root)
+    discovered = discover_filesystem([env.scan_root], [env.scan_root])
     registry = load_registry(env.registry_path)
     report = reconcile(discovered, registry, env.mesh_root)
 
@@ -93,7 +93,7 @@ def test_rename_project_detected_not_duplicated(env):
     (root / "graphify-out").unlink()
     root.rmdir()
 
-    discovered = discover_filesystem(env.scan_root, env.scan_root)
+    discovered = discover_filesystem([env.scan_root], [env.scan_root])
     registry = load_registry(env.registry_path)
     report = reconcile(discovered, registry, env.mesh_root)
 
@@ -111,11 +111,10 @@ def test_nested_depth2_discovery_nested_workspace_style(env):
         "example-org",
         "assets",
         "workspace/assets",
-        nested=True,
     )
     env.write_registry()
 
-    discovered = discover_filesystem(env.scan_root, env.scan_root)
+    discovered = discover_filesystem([env.scan_root], [env.scan_root])
     registry = load_registry(env.registry_path)
     report = reconcile(discovered, registry, env.mesh_root)
 
@@ -133,7 +132,7 @@ def test_remove_project_pruned_and_flagged(env):
 
     _shutil.rmtree(env.scan_root / "styleguide.example-org.dev.lo")
 
-    discovered = discover_filesystem(env.scan_root, env.scan_root)
+    discovered = discover_filesystem([env.scan_root], [env.scan_root])
     registry = load_registry(env.registry_path)
     report = reconcile(discovered, registry, env.mesh_root)
 

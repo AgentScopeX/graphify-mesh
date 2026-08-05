@@ -1,7 +1,7 @@
 """graphify-mesh-sync — sync-pipeline entrypoint.
 
 Discovers all registered/discoverable per-project graphify collections under
-the configured scan root, decides update vs extract per project, rebuilds the
+the configured scan roots, decides update vs extract per project, rebuilds the
 global graph from empty via `graphify merge-graphs` (never `graphify global
 add` — see graphify_mesh/sync/__init__.py for the merge-semantics evidence),
 validates the result, and atomically publishes a new generation.
@@ -19,7 +19,12 @@ import logging
 import sys
 from pathlib import Path
 
-from graphify_mesh.sync.config import EXTRACT_MIN_CONCURRENCY, Settings
+from graphify_mesh.sync.config import (
+    EXTRACT_MIN_CONCURRENCY,
+    SCAN_MAX_DEPTH,
+    SCAN_MIN_DEPTH,
+    Settings,
+)
 from graphify_mesh.sync.locking import LockHeldError
 from graphify_mesh.sync.pipeline import run
 
@@ -38,7 +43,30 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--mesh-root", type=Path, default=None, help="Override the graph-mesh repo root (testing)."
     )
     parser.add_argument(
-        "--scan-root", type=Path, default=None, help="Override the scan root (testing)."
+        "--scan-root",
+        dest="scan_roots",
+        # Deliberately str, not Path: Settings.from_env's shared
+        # empty/whitespace-value normalization (_clean_root_args) needs the
+        # raw string to tell an explicit `--scan-root ""` apart from a real
+        # path — `Path("")` already collapses to `Path(".")`, which would
+        # silently resolve to cwd instead of being dropped.
+        type=str,
+        action="append",
+        default=None,
+        help=(
+            "Scan root for graphify-out discovery; repeatable. Default: "
+            "GRAPHIFY_MESH_SCAN_ROOTS (colon-separated), then "
+            "GRAPHIFY_MESH_SCAN_ROOT, then current working directory."
+        ),
+    )
+    parser.add_argument(
+        "--scan-depth",
+        type=int,
+        default=None,
+        help=(
+            "Max nesting of a project dir below a scan root (default 4, range "
+            f"{SCAN_MIN_DEPTH}-{SCAN_MAX_DEPTH}). Default: GRAPHIFY_MESH_SCAN_DEPTH."
+        ),
     )
     parser.add_argument(
         "--registry", type=Path, default=None, help="Override the registry.json path (testing)."
@@ -108,10 +136,16 @@ def main(argv: list[str] | None = None) -> int:
         # a bad/too-low CLI value degrades to fully sequential rather than
         # reaching ThreadPoolExecutor(max_workers=0), which raises.
         overrides["extract_concurrency"] = max(args.extract_concurrency, EXTRACT_MIN_CONCURRENCY)
+    if args.scan_depth is not None:
+        # Same floor-and-ceiling clamp as the env-var path
+        # (_scan_depth_from_env): a bad/too-low CLI value degrades to the
+        # shallowest scan rather than a zero/negative-depth walk, and a
+        # too-high value is capped rather than triggering an unbounded walk.
+        overrides["scan_depth"] = min(max(args.scan_depth, SCAN_MIN_DEPTH), SCAN_MAX_DEPTH)
 
     settings = Settings.from_env(
         mesh_root=args.mesh_root,
-        scan_root=args.scan_root,
+        scan_roots=args.scan_roots,
         registry_path=args.registry,
         **overrides,
     )

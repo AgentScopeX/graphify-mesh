@@ -69,7 +69,7 @@ def _settings(tmp_path: Path, **overrides) -> Settings:
     mesh_root = tmp_path / "mesh"
     return Settings.from_env(
         mesh_root=mesh_root,
-        scan_root=tmp_path / "www",
+        scan_roots=[tmp_path / "www"],
         registry_path=mesh_root / "bin" / "registry.json",
         graphify_bin=str(FAKE_GRAPHIFY),
         **overrides,
@@ -824,7 +824,7 @@ def test_pipeline_backend_mismatch_blocks_publish_end_to_end(env):
 
     settings = Settings.from_env(
         mesh_root=env.mesh_root,
-        scan_root=env.scan_root,
+        scan_roots=env.scan_roots,
         registry_path=env.registry_path,
         graphify_bin=str(mismatched_bin),
         ollama_health_check=lambda *a, **kw: True,

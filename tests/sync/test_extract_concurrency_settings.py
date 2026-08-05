@@ -71,8 +71,8 @@ def test_settings_default_extract_concurrency(monkeypatch, tmp_path):
     monkeypatch.delenv("GRAPHIFY_MESH_EXTRACT_CONCURRENCY", raising=False)
     settings = Settings(
         mesh_root=tmp_path,
-        scan_root=tmp_path,
-        approved_root=tmp_path,
+        scan_roots=[tmp_path],
+        approved_roots=[tmp_path],
         registry_path=tmp_path / "registry.json",
     )
     assert settings.extract_concurrency == EXTRACT_DEFAULT_CONCURRENCY
@@ -82,8 +82,8 @@ def test_settings_extract_concurrency_from_env(monkeypatch, tmp_path):
     monkeypatch.setenv("GRAPHIFY_MESH_EXTRACT_CONCURRENCY", "5")
     settings = Settings(
         mesh_root=tmp_path,
-        scan_root=tmp_path,
-        approved_root=tmp_path,
+        scan_roots=[tmp_path],
+        approved_roots=[tmp_path],
         registry_path=tmp_path / "registry.json",
     )
     assert settings.extract_concurrency == 5

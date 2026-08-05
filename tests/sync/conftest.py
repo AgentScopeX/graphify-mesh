@@ -26,6 +26,7 @@ class Env:
         # not beside it — this matters for the approved-root containment
         # check in discovery.discover_filesystem.
         self.scan_root = tmp_path / "www"
+        self.scan_roots = [self.scan_root]
         self.mesh_root = self.scan_root / "graph-mesh"
         self.registry_path = self.mesh_root / "bin" / "registry.json"
         self.control_path = tmp_path / "fake-graphify-control.json"
@@ -47,7 +48,6 @@ class Env:
         root_name: str,
         graph_fixture: str | None = "repo_a.json",
         enabled: bool = True,
-        nested: bool = False,
         make_symlink: bool = True,
         make_collection: bool = True,
     ) -> Path:
@@ -57,10 +57,12 @@ class Env:
             if graph_fixture is not None:
                 shutil.copy2(GRAPHS_DIR / graph_fixture, collection_path / "graph.json")
 
-        if nested:
-            root = self.scan_root / root_name.split("/")[0] / root_name.split("/")[1]
-        else:
-            root = self.scan_root / root_name
+        # `root_name` may contain "/" to describe arbitrary nesting depth
+        # below the scan root (e.g. "workspace/deep/assets" for a depth-3
+        # project dir).
+        root = self.scan_root
+        for segment in root_name.split("/"):
+            root = root / segment
         root.mkdir(parents=True, exist_ok=True)
         if make_symlink:
             link = root / "graphify-out"
@@ -78,8 +80,14 @@ class Env:
         )
         return root
 
-    def write_registry(self, disabled: list[str] | None = None) -> None:
-        payload = {"repos": self._repos, "disabled": disabled or [], "external_roots": []}
+    def write_registry(
+        self, disabled: list[str] | None = None, external_roots: list[str] | None = None
+    ) -> None:
+        payload = {
+            "repos": self._repos,
+            "disabled": disabled or [],
+            "external_roots": external_roots or [],
+        }
         self.registry_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     def set_control(self, collection_path: Path, mode: str, **extra) -> None:
@@ -111,7 +119,7 @@ class Env:
         overrides.setdefault("ollama_embed_health_check", lambda *a, **kw: False)
         return Settings.from_env(
             mesh_root=self.mesh_root,
-            scan_root=self.scan_root,
+            scan_roots=self.scan_roots,
             registry_path=self.registry_path,
             graphify_bin=str(FAKE_GRAPHIFY),
             **overrides,

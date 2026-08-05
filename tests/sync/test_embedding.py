@@ -18,7 +18,7 @@ def _settings(tmp_path: Path, **overrides) -> Settings:
     mesh_root = tmp_path / "mesh"
     return Settings.from_env(
         mesh_root=mesh_root,
-        scan_root=tmp_path / "www",
+        scan_roots=[tmp_path / "www"],
         registry_path=mesh_root / "bin" / "registry.json",
         graphify_bin=str(FAKE_GRAPHIFY),
         **overrides,
