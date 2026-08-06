@@ -479,9 +479,7 @@ def reconcile(
             # discovered symlinks resolving to the same target could report
             # a false "renamed" even though the registered root was among
             # the matches all along (Fix 3).
-            match_for_known_root = next(
-                (d for d in matches if d.source_root == entry.root), None
-            )
+            match_for_known_root = next((d for d in matches if d.source_root == entry.root), None)
             canonical = match_for_known_root or sorted(matches, key=lambda d: str(d.source_root))[0]
             if canonical.source_root == entry.root:
                 report.registered.append(entry.repo_id)

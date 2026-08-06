@@ -238,9 +238,7 @@ def test_overlapping_roots_nested_first_skips_re_walk_at_equal_or_greater_budget
     root = env.add_repo("o.proj2", "o", "proj2", "workspace/proj")
 
     discovered = discover_filesystem([nested_root, env.scan_root], [env.scan_root, nested_root])
-    matches = [
-        link for link in discovered if link.source_root == root and link.target is not None
-    ]
+    matches = [link for link in discovered if link.source_root == root and link.target is not None]
     assert len(matches) == 1
 
 
@@ -468,9 +466,7 @@ def test_resolve_oserror_on_symlink_target_skips_candidate(env, monkeypatch, cap
 
     assert root_ok in linked
     assert root_bad not in linked
-    assert any(
-        "cannot resolve graphify-out target" in record.message for record in caplog.records
-    )
+    assert any("cannot resolve graphify-out target" in record.message for record in caplog.records)
 
 
 # ---------------------------------------------------------------------------

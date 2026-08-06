@@ -149,30 +149,22 @@ def test_scan_depth_valid_value_passes_through(monkeypatch):
 
 def test_scan_depth_garbage_falls_back_to_floor(monkeypatch):
     monkeypatch.setenv("GRAPHIFY_MESH_SCAN_DEPTH", "not-a-number")
-    assert (
-        _scan_depth_from_env("GRAPHIFY_MESH_SCAN_DEPTH", SCAN_DEFAULT_DEPTH) == SCAN_MIN_DEPTH
-    )
+    assert _scan_depth_from_env("GRAPHIFY_MESH_SCAN_DEPTH", SCAN_DEFAULT_DEPTH) == SCAN_MIN_DEPTH
 
 
 def test_scan_depth_zero_falls_back_to_floor(monkeypatch):
     monkeypatch.setenv("GRAPHIFY_MESH_SCAN_DEPTH", "0")
-    assert (
-        _scan_depth_from_env("GRAPHIFY_MESH_SCAN_DEPTH", SCAN_DEFAULT_DEPTH) == SCAN_MIN_DEPTH
-    )
+    assert _scan_depth_from_env("GRAPHIFY_MESH_SCAN_DEPTH", SCAN_DEFAULT_DEPTH) == SCAN_MIN_DEPTH
 
 
 def test_scan_depth_negative_falls_back_to_floor(monkeypatch):
     monkeypatch.setenv("GRAPHIFY_MESH_SCAN_DEPTH", "-1")
-    assert (
-        _scan_depth_from_env("GRAPHIFY_MESH_SCAN_DEPTH", SCAN_DEFAULT_DEPTH) == SCAN_MIN_DEPTH
-    )
+    assert _scan_depth_from_env("GRAPHIFY_MESH_SCAN_DEPTH", SCAN_DEFAULT_DEPTH) == SCAN_MIN_DEPTH
 
 
 def test_scan_depth_above_cap_clamped_to_ceiling(monkeypatch):
     monkeypatch.setenv("GRAPHIFY_MESH_SCAN_DEPTH", "99")
-    assert (
-        _scan_depth_from_env("GRAPHIFY_MESH_SCAN_DEPTH", SCAN_DEFAULT_DEPTH) == SCAN_MAX_DEPTH
-    )
+    assert _scan_depth_from_env("GRAPHIFY_MESH_SCAN_DEPTH", SCAN_DEFAULT_DEPTH) == SCAN_MAX_DEPTH
 
 
 def test_settings_direct_construction_scan_depth_zero_clamped(tmp_path):

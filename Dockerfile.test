@@ -1,0 +1,57 @@
+# Test/lint environment for graphify-mesh — keeps Python deps off the host.
+#
+# Usage:
+#   docker build -f Dockerfile.test -t graphify-mesh-test .
+#   docker run --rm -v "$PWD":/app graphify-mesh-test python -m pytest tests/
+#   docker run --rm -v "$PWD":/app graphify-mesh-test ruff check .
+#   docker run --rm -v "$PWD":/app graphify-mesh-test ruff format --check .
+#   docker run --rm -v "$PWD":/app graphify-mesh-test mypy src/
+#
+# Corporate network hooks — both optional, gitignored, auto-detected:
+#   .docker-ca.crt    company root CA (TLS-intercepting proxy)
+#                     skip with: --build-arg WITH_CA=0
+#   .docker-pip.conf  pip config for an internal index (JFrog/Nexus/devpi)
+#                     skip with: --build-arg WITH_PIP_CONF=0
+
+FROM python:3.12-slim
+
+ARG WITH_CA=1
+ARG WITH_PIP_CONF=1
+
+WORKDIR /app
+
+# ---- Optional corporate CA + pip config ------------------------------------
+# The [t]/[f] globs let COPY succeed when the optional files are absent;
+# pyproject.toml anchors the layer so COPY never matches zero files.
+COPY pyproject.toml .docker-ca.cr[t] .docker-pip.con[f] /tmp/build-ctx/
+
+RUN if [ "$WITH_CA" = "1" ] && [ -f /tmp/build-ctx/.docker-ca.crt ]; then \
+        cp /tmp/build-ctx/.docker-ca.crt /usr/local/share/ca-certificates/corporate-ca.crt; \
+        update-ca-certificates; \
+    fi; \
+    if [ "$WITH_PIP_CONF" = "1" ] && [ -f /tmp/build-ctx/.docker-pip.conf ]; then \
+        cp /tmp/build-ctx/.docker-pip.conf /etc/pip.conf; \
+    fi
+
+ENV PIP_CERT=/etc/ssl/certs/ca-certificates.crt \
+    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
+    REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+
+# ---- System packages --------------------------------------------------------
+# git: tests init throwaway repos (dirty-worktree checks).
+# DL3008 (pin apt versions) ignored: exact Debian package pins break on every
+# point release; this is a local dev image, not a shipped artifact.
+# hadolint ignore=DL3008
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---- Python dependencies ----------------------------------------------------
+# Source is bind-mounted at runtime; the image only bakes the dependency set.
+# No .git in the build context, so setuptools-scm cannot derive a version.
+ENV SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0
+
+COPY pyproject.toml README.md LICENSE ./
+COPY src/ src/
+
+RUN pip install --no-cache-dir -e '.[test,lint]'
